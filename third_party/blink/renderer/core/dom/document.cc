@@ -28,6 +28,8 @@
  */
 
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/tizentube_userscript.h"
+#include "third_party/blink/renderer/core/script/classic_script.h"
 
 #include <algorithm>
 #include <memory>
@@ -4010,26 +4012,10 @@ void Document::ImplicitClose() {
 
   load_event_progress_ = kLoadEventInProgress;
 
-  // TizenTube userscript injection.
-  if (IsA<HTMLDocument>(this)) {
-    Element* script_container = head();
-
-    if (!script_container) {
-      script_container = documentElement();
-    }
-
-    if (script_container) {
-      auto* script = CreateRawElement(html_names::kScriptTag);
-
-      double epoch_time = base::Time::Now().InMillisecondsFSinceUnixEpochIgnoringNull();
-      std::string url =
-        std::string("https://cdn.jsdelivr.net/npm/@foxreis/tizentube/dist/userScript.js?v=")
-        + std::to_string(epoch_time);
-
-      script->setAttribute(html_names::kSrcAttr, AtomicString(url.c_str()));
-
-      script_container->appendChild(script);
-    }
+  // Bundle TizenTube 1.15.0 with the Kids guide compatibility fix.
+  if (IsA<HTMLDocument>(this) && domWindow()) {
+    ClassicScript::CreateUnspecifiedScript(String::FromUTF8(kTizenTubeUserScript))
+        ->RunScript(domWindow());
   }
 
   // We have to clear the parser, in case someone document.write()s from the
