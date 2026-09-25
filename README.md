@@ -26,8 +26,6 @@ Cobalt is a lightweight, cross-platform application container and runtime for HT
 
 Get the latest release for your platform:
 
-[**Download Latest Release**](https://github.com/reisxd/TizenTubeCobalt/releases/latest)
-
 AFTVNews code: `7487145`
 
 For a better experience, preferably use TizenTube Cobalt on a [**Google TV certified device.**](https://www.androidtv-guide.com/)
