@@ -74,7 +74,7 @@ android {
         }
     }
     defaultConfig {
-        applicationId "io.gh.reisxd.tizentube.cobalt"
+        applicationId "com.youtube.cobalt"
         minSdkVersion MIN_SUPPORTED_SDK_VERSION
         targetSdkVersion LATEST_SUPPORTED_SDK_VERSION
         compileSdkVersion LATEST_SUPPORTED_SDK_VERSION

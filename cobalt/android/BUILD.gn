@@ -9,7 +9,7 @@ jinja_template("cobalt_manifest") {
   input = "//cobalt/shell/android/shell_apk/AndroidManifest.xml.jinja2"
   output = cobalt_manifest
   variables = [
-    "manifest_package=io.gh.reisxd.tizentube.cobalt",
+    "manifest_package=com.youtube.cobalt",
     "build_type=$build_type",
   ]
 }
