@@ -192,11 +192,8 @@ void Application::Cancel(SbEventId id) {
 void Application::HandleFrame(SbPlayer player,
                               const scoped_refptr<VideoFrame>& frame,
                               int z_index,
-                              int x,
-                              int y,
-                              int width,
-                              int height) {
-  AcceptFrame(player, frame, z_index, x, y, width, height);
+                              const Rect& rect) {
+  AcceptFrame(player, frame, z_index, rect);
 }
 
 void Application::SetStartLink(const char* start_link) {
@@ -360,16 +357,7 @@ bool Application::DispatchAndDelete(Application::Event* event) {
         case kStateConcealed:
           HandleEventAndUpdateState(
               new Event(kSbEventTypeFreeze, timestamp, NULL, NULL));
-          // There is a race condition with kSbEventTypeStop processing and
-          // timed events currently in use. Processing the intermediate events
-          // takes time, so makes it more likely that a timed event will be due
-          // immediately and processed immediately afterward. The event(s) need
-          // to be fixed to behave better after kSbEventTypeStop has been
-          // handled. In the meantime, continue to use Inject() to preserve the
-          // current timing. This bug can still happen with Inject(), but it is
-          // less likely than if HandleEventAndUpdateState() were used.
-          Inject(scoped_event.release());
-          return true;
+          break;
         case kStateFrozen:
           break;
         case kStateStopped:

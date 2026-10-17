@@ -16,12 +16,38 @@
 
 #include "starboard/common/thread_platform.h"
 
+#include <pthread.h>
+#include <sys/resource.h>
+
+#include "starboard/common/thread.h"
 #include "third_party/jni_zero/jni_zero.h"
 
 namespace starboard {
 
+void SetCurrentThreadName(const char* name) {
+  pthread_setname_np(pthread_self(), name);
+}
+
+bool SetCurrentThreadPriority(ThreadPriority priority) {
+  // setpriority returns 0 on success and -1 on failure. The default nice value
+  // is 0. See https://linux.die.net/man/2/setpriority
+  return setpriority(PRIO_PROCESS, /*who=*/0,
+                     ThreadPriorityToNiceValue(priority)) == 0;
+}
+
 void TerminateOnThread() {
   jni_zero::DetachFromVM();
+}
+
+// Reduces default helper thread stacks from the Bionic platform default (1MB)
+// to 256KB to save virtual memory on low-memory Android TV devices.
+// Experiment results (b/527182602) showed ~18MB-30MB reduction in VmSize/VA
+// without regressions. High-risk threads (e.g. renderer, GPU, Blink worker
+// threads) are explicitly assigned 1MB elsewhere.
+//
+// See also base/threading/platform_thread_android.cc for base::PlatformThread.
+std::optional<size_t> GetDefaultThreadStackSize() {
+  return 256 * 1024;
 }
 
 }  // namespace starboard

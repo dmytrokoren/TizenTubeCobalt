@@ -20,9 +20,11 @@
 #include <vector>
 
 #include "cobalt/version.h"
+#include "starboard/common/app_key.h"
 #include "starboard/common/check_op.h"
 #include "starboard/common/command_line.h"
 #include "starboard/common/log.h"
+#include "starboard/common/no_destructor.h"
 #include "starboard/common/paths.h"
 #include "starboard/common/string.h"
 #include "starboard/configuration.h"
@@ -35,7 +37,6 @@
 #include "starboard/elf_loader/sabi_string.h"
 #include "starboard/event.h"
 #include "starboard/extension/loader_app_metrics.h"
-#include "starboard/loader_app/app_key.h"
 #include "starboard/loader_app/loader_app_switches.h"
 #include "starboard/loader_app/memory_tracker_thread.h"
 #include "starboard/loader_app/read_evergreen_version.h"
@@ -49,20 +50,25 @@ namespace {
 // Relative path to the Cobalt's system image content path.
 const char kSystemImageContentPath[] = "app/cobalt/content";
 
-// Relative path to the Cobalt's system image library.
+// Relative path to an uncompressed Cobalt system image library.
 const char kSystemImageLibraryPath[] = "app/cobalt/lib/libcobalt.so";
 
-// Relative path to the compressed Cobalt's system image library.
-const char kSystemImageCompressedLibraryPath[] = "app/cobalt/lib/libcobalt.lz4";
+// Relative path to an LZ4 compressed Cobalt system image library.
+const char kSystemImageLz4CompressedLibraryPath[] =
+    "app/cobalt/lib/libcobalt.lz4";
+
+// Relative path to a Zstd compressed Cobalt system image library.
+const char kSystemImageZstdCompressedLibraryPath[] =
+    "app/cobalt/lib/libcobalt.zst";
 
 // Relative path to Cobalt's system image manifest.json.
 const char kSystemImageManifestPath[] = "app/cobalt/manifest.json";
 
-// Cobalt default URL.
-const char kCobaltDefaultUrl[] = "https://www.youtube.com/tv";
-
 // Portable ELF loader.
-elf_loader::ElfLoader g_elf_loader;
+elf_loader::ElfLoader& GetElfLoader() {
+  static starboard::NoDestructor<elf_loader::ElfLoader> s_elf_loader;
+  return *s_elf_loader;
+}
 
 // Pointer to the |SbEventHandle| function in the
 // Cobalt binary.
@@ -72,14 +78,14 @@ class CobaltLibraryLoader : public loader_app::LibraryLoader {
  public:
   virtual bool Load(const std::string& library_path,
                     const std::string& content_path,
-                    bool use_compression,
+                    elf_loader::CompressionType compression_type,
                     bool use_memory_mapped_file) {
-    return g_elf_loader.Load(library_path, content_path, false,
-                             &loader_app::SbSystemGetExtensionShim,
-                             use_compression, use_memory_mapped_file);
+    return GetElfLoader().Load(library_path, content_path, false,
+                               &loader_app::SbSystemGetExtensionShim,
+                               compression_type, use_memory_mapped_file);
   }
   virtual void* Resolve(const std::string& symbol) {
-    return g_elf_loader.LookupSymbol(symbol.c_str());
+    return GetElfLoader().LookupSymbol(symbol.c_str());
   }
 };
 
@@ -136,40 +142,51 @@ void LoadLibraryAndInitialize(const std::string& alternative_content_path,
   std::string library_path = content_dir;
   library_path += kSbFileSepString;
 
-  std::string compressed_library_path(library_path);
-  compressed_library_path += kSystemImageCompressedLibraryPath;
+  std::string zstd_compressed_library_path(library_path);
+  zstd_compressed_library_path += kSystemImageZstdCompressedLibraryPath;
+
+  std::string lz4_compressed_library_path(library_path);
+  lz4_compressed_library_path += kSystemImageLz4CompressedLibraryPath;
 
   std::string uncompressed_library_path(library_path);
   uncompressed_library_path += kSystemImageLibraryPath;
 
-  bool use_compression;
+  elf_loader::CompressionType compression_type =
+      elf_loader::CompressionType::kNone;
   struct stat info;
-  if (stat(compressed_library_path.c_str(), &info) == 0) {
-    library_path = compressed_library_path;
-    use_compression = true;
+  if (use_memory_mapped_file &&
+      stat(uncompressed_library_path.c_str(), &info) == 0) {
+    library_path = uncompressed_library_path;
+  } else if (stat(lz4_compressed_library_path.c_str(), &info) == 0) {
+    library_path = lz4_compressed_library_path;
+    compression_type = elf_loader::CompressionType::kLz4;
+  } else if (stat(zstd_compressed_library_path.c_str(), &info) == 0) {
+    library_path = zstd_compressed_library_path;
+    compression_type = elf_loader::CompressionType::kZstd;
   } else if (stat(uncompressed_library_path.c_str(), &info) == 0) {
     library_path = uncompressed_library_path;
-    use_compression = false;
   } else {
     SB_LOG(ERROR) << "No library found at compressed "
-                  << compressed_library_path << " or uncompressed "
+                  << zstd_compressed_library_path << " or "
+                  << lz4_compressed_library_path << " or uncompressed "
                   << uncompressed_library_path << " path";
     return;
   }
 
-  if (use_compression && use_memory_mapped_file) {
+  if (compression_type != elf_loader::CompressionType::kNone &&
+      use_memory_mapped_file) {
     SB_LOG(ERROR) << "Using both compression and mmap files is not supported";
     return;
   }
 
-  if (!g_elf_loader.Load(library_path, content_path, false, nullptr,
-                         use_compression, use_memory_mapped_file)) {
+  if (!GetElfLoader().Load(library_path, content_path, false, nullptr,
+                           compression_type, use_memory_mapped_file)) {
     SB_NOTREACHED() << "Failed to load library at '"
-                    << g_elf_loader.GetLibraryPath() << "'.";
+                    << GetElfLoader().GetLibraryPath() << "'.";
     return;
   }
 
-  SB_LOG(INFO) << "Successfully loaded '" << g_elf_loader.GetLibraryPath()
+  SB_LOG(INFO) << "Successfully loaded '" << GetElfLoader().GetLibraryPath()
                << "'.";
 
   EvergreenInfo evergreen_info;
@@ -181,7 +198,7 @@ void LoadLibraryAndInitialize(const std::string& alternative_content_path,
   }
 
   auto get_evergreen_sabi_string_func = reinterpret_cast<const char* (*)()>(
-      g_elf_loader.LookupSymbol("GetEvergreenSabiString"));
+      GetElfLoader().LookupSymbol("GetEvergreenSabiString"));
 
   if (!CheckSabi(get_evergreen_sabi_string_func)) {
     SB_LOG(ERROR) << "CheckSabi failed";
@@ -189,7 +206,7 @@ void LoadLibraryAndInitialize(const std::string& alternative_content_path,
   }
 
   auto get_user_agent_func = reinterpret_cast<const char* (*)()>(
-      g_elf_loader.LookupSymbol("GetCobaltUserAgentString"));
+      GetElfLoader().LookupSymbol("GetCobaltUserAgentString"));
   if (!get_user_agent_func) {
     SB_LOG(ERROR) << "Failed to get user agent string";
   } else {
@@ -205,7 +222,7 @@ void LoadLibraryAndInitialize(const std::string& alternative_content_path,
   }
 
   g_sb_event_func = reinterpret_cast<void (*)(const SbEvent*)>(
-      g_elf_loader.LookupSymbol("SbEventHandle"));
+      GetElfLoader().LookupSymbol("SbEventHandle"));
 
   if (!g_sb_event_func) {
     SB_LOG(ERROR) << "Failed to find SbEventHandle.";
@@ -269,21 +286,9 @@ void SbEventHandle(const SbEvent* event) {
         command_line.GetSwitchValue(loader_app::kContent);
     SB_LOG(INFO) << "alternative_content=" << alternative_content;
 
-    bool use_compressed_updates =
-        !is_evergreen_lite &&
-        !command_line.HasSwitch(loader_app::kUseUncompressedUpdates);
-
     bool use_memory_mapped_file =
         command_line.HasSwitch(loader_app::kLoaderUseMemoryMappedFile);
     SB_LOG(INFO) << "use_memory_mapped_file=" << use_memory_mapped_file;
-
-    if (use_compressed_updates && use_memory_mapped_file) {
-      SB_LOG(ERROR) << "Compression and memory mapping are incompatible."
-                    << " Compressed updates should not be installed because"
-                    << " the loader app is configured to use memory mapping"
-                    << " and would not be able to load them.";
-      return;
-    }
 
     if (command_line.HasSwitch(loader_app::kLoaderTrackMemory)) {
       std::string period =
@@ -307,9 +312,9 @@ void SbEventHandle(const SbEvent* event) {
     } else {
       std::string url = command_line.GetSwitchValue(loader_app::kURL);
       if (url.empty()) {
-        url = kCobaltDefaultUrl;
+        url = starboard::kCobaltDefaultUrl;
       }
-      std::string app_key = loader_app::GetAppKey(url);
+      std::string app_key = starboard::GetAppKey(url);
       SB_CHECK(!app_key.empty());
 
       g_sb_event_func = reinterpret_cast<void (*)(const SbEvent*)>(

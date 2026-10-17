@@ -9,7 +9,9 @@
             ],
             "files": [
                 "app/cobalt/lib/libcobalt.lz4",
+                "app/cobalt/lib/libcobalt.zst",
                 "cobalt_shell.pak",
+                "icudtl.dat",
                 "fonts/fonts.xml",
                 "gen/build_info.json",
                 "gen/licenses_cobalt.spdx",
@@ -22,6 +24,10 @@
                     "to_file": "content/cobalt_shell.pak"
                 },
                 {
+                    "from_file": "icudtl.dat",
+                    "to_file": "content/icudtl.dat"
+                },
+                {
                     "from_file": "libcobalt.so",
                     "to_file": "lib/libcobalt.so"
                 }
@@ -30,6 +36,10 @@
                 {
                     "from_file": "app/cobalt/lib/libcobalt.lz4",
                     "to_file": "lib/compressed/libcobalt.lz4"
+                },
+                {
+                    "from_file": "app/cobalt/lib/libcobalt.zst",
+                    "to_file": "lib/compressed/libcobalt.zst"
                 },
                 {
                     "from_file": "fonts/fonts.xml",

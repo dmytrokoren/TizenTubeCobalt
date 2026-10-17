@@ -13,5 +13,39 @@
 # limitations under the License.
 
 config("platform_configuration") {
-  configs = [ "//starboard/android/shared/platform_configuration" ]
+  configs = [
+    "//starboard/android/shared/platform_configuration",
+    ":no_pedantic_warnings",
+  ]
+
+  if (current_toolchain == starboard_toolchain) {
+    ldflags = [
+      "-Wl,--wrap=access",
+      "-Wl,--wrap=alarm",
+      "-Wl,--wrap=close",
+      "-Wl,--wrap=closedir",
+      "-Wl,--wrap=fdopendir",
+      "-Wl,--wrap=fstatat",
+      "-Wl,--wrap=if_indextoname",
+      "-Wl,--wrap=mkostemp",
+      "-Wl,--wrap=open",
+      "-Wl,--wrap=opendir",
+      "-Wl,--wrap=openat",
+      "-Wl,--wrap=readdir",
+      "-Wl,--wrap=readdir_r",
+      "-Wl,--wrap=stat",
+    ]
+  }
+}
+
+config("no_pedantic_warnings") {
+  cflags = [
+    "-Wno-implicit-fallthrough",
+    "-Wno-missing-braces",
+    "-Wno-return-type",
+    "-Wno-sometimes-uninitialized",
+    "-Wno-vla-cxx-extension",
+    "-Wno-unreachable-code-return",
+    "-Wno-unused-function",
+  ]
 }

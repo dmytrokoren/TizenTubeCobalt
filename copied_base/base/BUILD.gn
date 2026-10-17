@@ -451,6 +451,8 @@ component("base") {
     "memory/shared_memory_tracker.cc",
     "memory/shared_memory_tracker.h",
     "memory/singleton.h",
+    "memory/cobalt_memory_context.cc",
+    "memory/cobalt_memory_context.h",
     "memory/stack_allocated.h",
     "memory/unsafe_shared_memory_pool.cc",
     "memory/unsafe_shared_memory_pool.h",
@@ -1367,6 +1369,8 @@ component("base") {
       "android/jni_android.h",
       "android/jni_array.cc",
       "android/jni_array.h",
+      "android/jni_bytebuffer.cc",
+      "android/jni_bytebuffer.h",
       "android/jni_generator/jni_generator_helper.h",
       "android/jni_int_wrapper.h",
       "android/jni_registrar.cc",
@@ -1380,17 +1384,20 @@ component("base") {
       "android/library_loader/library_loader_hooks.cc",
       "android/library_loader/library_loader_hooks.h",
       "android/native_uma_recorder.cc",
-      "android/scoped_java_ref.cc",
       "android/scoped_java_ref.h",
       "android/trace_event_binding.cc",
       "android/trace_event_binding.h",
     ]
 
     public_configs += [ ":copied_base_jni_include_dir" ]
-    
+
+    public_deps += [ "//third_party/jni_zero:jni_zero" ]
+
     deps += [
       ":base_jni",
+      ":jni_android_jni",
       ":process_launcher_jni",
+      "//build:robolectric_buildflags",
     ]
   }  # is_android || is_robolectric
 
@@ -2308,13 +2315,6 @@ component("base") {
         "allocator/partition_allocator/shim/allocator_interception_mac.mm",
         "allocator/partition_allocator/shim/malloc_zone_functions_mac.cc",
         "allocator/partition_allocator/shim/malloc_zone_functions_mac.h",
-      ]
-    } else {
-      sources -= [
-        "sampling_heap_profiler/poisson_allocation_sampler.cc",
-        "sampling_heap_profiler/poisson_allocation_sampler.h",
-        "sampling_heap_profiler/sampling_heap_profiler.cc",
-        "sampling_heap_profiler/sampling_heap_profiler.h",
       ]
     }
 
@@ -3833,6 +3833,7 @@ test("base_unittests") {
       "android/java_handler_thread_unittest.cc",
       "android/jni_android_unittest.cc",
       "android/jni_array_unittest.cc",
+      "android/jni_bytebuffer_unittest.cc",
       "android/jni_string_unittest.cc",
       "android/library_loader/library_prefetcher_unittest.cc",
       "android/linker/linker_jni.cc",
@@ -4251,6 +4252,7 @@ if (is_android || is_robolectric) {
       "android/java/src/org/chromium/base/library_loader/LibraryLoader.java",
       "android/java/src/org/chromium/base/library_loader/LibraryPrefetcher.java",
       "android/java/src/org/chromium/base/memory/JavaHeapDumpGenerator.java",
+      "android/java/src/org/chromium/base/memory/CobaltMemoryInfoBridge.java",
       "android/java/src/org/chromium/base/memory/MemoryInfoBridge.java",
       "android/java/src/org/chromium/base/metrics/NativeUmaRecorder.java",
       "android/java/src/org/chromium/base/metrics/StatisticsRecorderAndroid.java",
@@ -4265,7 +4267,10 @@ if (is_android || is_robolectric) {
   }
 
   generate_jar_jni("android_runtime_jni_headers") {
-    classes = [ "java/lang/Runtime.class" ]
+    classes = [
+      "java/lang/Runtime.class",
+      "java/lang/Throwable.class",
+    ]
   }
 
   generate_jar_jni("android_runtime_unchecked_jni_headers") {
@@ -4277,6 +4282,10 @@ if (is_android || is_robolectric) {
     sources = [
       "android/java/src/org/chromium/base/process_launcher/ChildProcessService.java",
     ]
+  }
+
+  generate_jni("jni_android_jni") {
+    sources = [ "android/java/src/org/chromium/base/JniAndroid.java" ]
   }
 }  # is_android || is_robolectric
 
@@ -4368,6 +4377,7 @@ if (is_android) {
       "//third_party/androidx:androidx_annotation_annotation_java",
       "//third_party/androidx:androidx_collection_collection_java",
       "//third_party/androidx:androidx_core_core_java",
+      "//third_party/jni_zero:jni_zero_java",
     ]
 
     sources = [
@@ -4448,6 +4458,7 @@ if (is_android) {
       "android/java/src/org/chromium/base/lifetime/DestroyChecker.java",
       "android/java/src/org/chromium/base/lifetime/Destroyable.java",
       "android/java/src/org/chromium/base/memory/JavaHeapDumpGenerator.java",
+      "android/java/src/org/chromium/base/memory/CobaltMemoryInfoBridge.java",
       "android/java/src/org/chromium/base/memory/MemoryInfoBridge.java",
       "android/java/src/org/chromium/base/memory/MemoryPressureCallback.java",
       "android/java/src/org/chromium/base/memory/MemoryPressureMonitor.java",

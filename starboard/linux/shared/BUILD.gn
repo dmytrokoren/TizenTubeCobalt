@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import("//starboard/build/config/toolchain_variables.gni")
 import("//starboard/shared/starboard/media/media_tests.gni")
 import("//starboard/shared/starboard/player/buildfiles.gni")
 import("//starboard/shared/starboard/player/player_tests.gni")
+
+assert(is_starboard_toolchain)
 
 group("starboard_platform") {
   public_deps = [
@@ -30,7 +33,7 @@ group("starboard_platform") {
     "//third_party/opus",
   ]
 
-  if (sb_is_evergreen_compatible) {
+  if (is_starboard) {
     public_deps += [
       "//starboard/elf_loader:constants",
       "//starboard/elf_loader:evergreen_config",
@@ -52,7 +55,7 @@ static_library("starboard_base_symbolize") {
     "//starboard:starboard_headers_only",
     "//starboard/common:common_headers_only",
   ]
-  if (sb_is_evergreen_compatible && current_toolchain == starboard_toolchain) {
+  if (is_starboard) {
     public_deps = [ "//starboard/elf_loader:evergreen_info" ]
   }
 
@@ -76,6 +79,8 @@ static_library("starboard_platform_sources") {
     "//starboard/linux/shared/decode_target_release.cc",
     "//starboard/linux/shared/ifa.cc",
     "//starboard/linux/shared/ifa.h",
+    "//starboard/linux/shared/low_memory_kill.cc",
+    "//starboard/linux/shared/low_memory_kill.h",
     "//starboard/linux/shared/media_is_audio_supported.cc",
     "//starboard/linux/shared/media_is_video_supported.cc",
     "//starboard/linux/shared/microphone/microphone_impl.cc",
@@ -117,7 +122,6 @@ static_library("starboard_platform_sources") {
     "//starboard/shared/linux/system_is_debugger_attached.cc",
     "//starboard/shared/linux/system_network_status.cc",
     "//starboard/shared/linux/system_symbolize.cc",
-    "//starboard/shared/linux/thread_get_id.cc",
     "//starboard/shared/linux/time_zone_get_name.cc",
     "//starboard/shared/linux/time_zone_monitor.cc",
     "//starboard/shared/linux/time_zone_monitor.h",
@@ -128,7 +132,6 @@ static_library("starboard_platform_sources") {
     "//starboard/shared/opus/opus_audio_decoder.cc",
     "//starboard/shared/opus/opus_audio_decoder.h",
     "//starboard/shared/posix/environment.cc",
-    "//starboard/shared/posix/file_atomic_replace.cc",
     "//starboard/shared/posix/free_space.cc",
     "//starboard/shared/posix/free_space.h",
     "//starboard/shared/posix/log.cc",
@@ -173,8 +176,6 @@ static_library("starboard_platform_sources") {
     "//starboard/shared/starboard/audio_sink/stub_audio_sink_type.h",
     "//starboard/shared/starboard/event_cancel.cc",
     "//starboard/shared/starboard/event_schedule.cc",
-    "//starboard/shared/starboard/file_atomic_replace_write_file.cc",
-    "//starboard/shared/starboard/file_atomic_replace_write_file.h",
     "//starboard/shared/starboard/file_storage/storage_close_record.cc",
     "//starboard/shared/starboard/file_storage/storage_delete_record.cc",
     "//starboard/shared/starboard/file_storage/storage_get_record_size.cc",
@@ -208,6 +209,7 @@ static_library("starboard_platform_sources") {
     "//starboard/shared/starboard/system_request_stop.cc",
     "//starboard/shared/starboard/system_supports_resume.cc",
     "//starboard/shared/starboard/window_set_default_options.cc",
+    "//starboard/shared/stub/media_can_change_type.cc",
     "//starboard/shared/stub/speech_synthesis_cancel.cc",
     "//starboard/shared/stub/speech_synthesis_is_supported.cc",
     "//starboard/shared/stub/speech_synthesis_speak.cc",
@@ -223,7 +225,7 @@ static_library("starboard_platform_sources") {
 
   sources -= [ "//starboard/shared/starboard/player/player_set_bounds.cc" ]
 
-  if (sb_is_evergreen_compatible) {
+  if (is_starboard) {
     sources += [
       "//starboard/shared/starboard/loader_app_metrics.cc",
       "//starboard/shared/starboard/loader_app_metrics.h",
@@ -234,6 +236,8 @@ static_library("starboard_platform_sources") {
     sources += [
       "//starboard/shared/starboard/crash_handler.cc",
       "//starboard/shared/starboard/crash_handler.h",
+      "//starboard/shared/starboard/native_stability.cc",
+      "//starboard/shared/starboard/native_stability.h",
     ]
   }
 
@@ -305,21 +309,21 @@ static_library("starboard_platform_sources") {
   }
 }
 
-if (current_toolchain == starboard_toolchain) {
-  source_set("starboard_platform_tests") {
-    testonly = true
+source_set("starboard_platform_tests") {
+  testonly = true
 
-    sources = media_tests_sources + player_tests_sources +
-              [ "//starboard/shared/ffmpeg/ffmpeg_audio_decoder_test.cc" ]
+  sources = media_tests_sources + player_tests_sources + [
+              "//starboard/linux/shared/low_memory_kill_test.cc",
+              "//starboard/shared/ffmpeg/ffmpeg_audio_decoder_test.cc",
+            ]
 
-    configs += [ "//starboard/build/config:starboard_implementation" ]
+  configs += [ "//starboard/build/config:starboard_implementation" ]
 
-    deps = [
-      ":starboard_platform",
-      "//starboard:starboard_with_main",
-      "//starboard/shared/starboard/player/filter/testing:test_util",
-      "//testing/gmock",
-      "//testing/gtest",
-    ]
-  }
+  deps = [
+    ":starboard_platform",
+    "//starboard:starboard_with_main",
+    "//starboard/shared/starboard/player/filter/testing:test_util",
+    "//testing/gmock",
+    "//testing/gtest",
+  ]
 }

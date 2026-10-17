@@ -14,6 +14,7 @@
 
 #include "cobalt/browser/global_features.h"
 
+#include <string_view>
 #include <variant>
 
 #include "base/feature_list.h"
@@ -21,9 +22,13 @@
 #include "base/json/string_escape.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
+#include "base/strings/string_util.h"
+#include "base/threading/hang_watcher.h"
 #include "base/time/time.h"
 #include "cobalt/browser/constants/cobalt_experiment_names.h"
+#include "cobalt/browser/constants/cobalt_pref_names.h"
 #include "cobalt/browser/metrics/cobalt_metrics_services_manager_client.h"
+#include "components/metrics/file_metrics_provider.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/metrics_service.h"
 #include "components/metrics_services_manager/metrics_services_manager.h"
@@ -36,20 +41,11 @@
 
 namespace cobalt {
 
-constexpr base::FilePath::CharType kExperimentConfigFilename[] =
-    FILE_PATH_LITERAL("Experiment Config");
-
-constexpr base::FilePath::CharType kMetricsConfigFilename[] =
-    FILE_PATH_LITERAL("Metrics Config");
-
 GlobalFeatures::GlobalFeatures() {
   CreateExperimentConfig();
   CreateMetricsServices();
-  // InitializeActiveConfigData needs ExperimentConfigManager to determine
-  // the experiment config type.
   experiment_config_manager_ = std::make_unique<ExperimentConfigManager>(
       experiment_config_.get(), metrics_local_state_.get());
-  InitializeActiveConfigData();
 }
 
 // static
@@ -98,19 +94,42 @@ GlobalFeatures::GetSettings() const {
   return settings_;
 }
 
-void GlobalFeatures::SetSettings(const std::string& key,
-                                 const SettingValue& value) {
+std::optional<GlobalFeatures::SettingValue> GlobalFeatures::GetSetting(
+    std::string_view key) const {
   base::AutoLock auto_lock(lock_);
-  settings_[key] = value;
+  auto it = settings_.find(key);
+  if (it != settings_.end()) {
+    return it->second;
+  }
+  return std::nullopt;
+}
 
-  LOG(INFO) << "SetSettings: key=" << key << ", value=" << [&value] {
-    if (const auto* s = std::get_if<std::string>(&value)) {
-      return base::GetQuotedJSONString(*s);
-    } else if (const auto* i = std::get_if<int64_t>(&value)) {
-      return std::to_string(*i);
-    }
-    NOTREACHED();
-  }();
+void GlobalFeatures::SetSettings(std::string_view key,
+                                 const SettingValue& value) {
+  {
+    base::AutoLock auto_lock(lock_);
+    settings_[key] = value;
+
+    LOG(INFO) << "SetSettings: key=" << key << ", value=" << [&value] {
+      if (const auto* s = std::get_if<std::string>(&value)) {
+        return base::GetQuotedJSONString(*s);
+      } else if (const auto* i = std::get_if<int64_t>(&value)) {
+        return base::NumberToString(*i);
+      }
+      NOTREACHED();
+    }();
+  }
+
+  base::HangWatcher::UpdateConfiguration();
+}
+
+void GlobalFeatures::ClearSetting(std::string_view key) {
+  {
+    base::AutoLock auto_lock(lock_);
+    settings_.erase(key);
+  }
+
+  base::HangWatcher::UpdateConfiguration();
 }
 
 void GlobalFeatures::CreateExperimentConfig() {
@@ -147,6 +166,9 @@ void GlobalFeatures::CreateMetricsLocalState() {
   // reference to it.
   auto pref_registry = base::MakeRefCounted<PrefRegistrySimple>();
   metrics::MetricsService::RegisterPrefs(pref_registry.get());
+  metrics::FileMetricsProvider::RegisterPrefs(pref_registry.get());
+  metrics::FileMetricsProvider::RegisterSourcePrefs(pref_registry.get(),
+                                                    "BrowserStabilityMetrics");
   // This is the pref used to globally enable/disable metrics reporting. When
   // metrics reporting is toggled via any method (e.g., command line, JS API
   // call, etc., this is the setting that's overridden).
@@ -164,12 +186,11 @@ void GlobalFeatures::CreateMetricsLocalState() {
   metrics_local_state_ = pref_service_factory.Create(std::move(pref_registry));
 }
 
-void GlobalFeatures::InitializeActiveConfigData() {
+void GlobalFeatures::InitializeActiveConfigData(
+    ExperimentConfigType experiment_config_type) {
   DCHECK(experiment_config_);
-  DCHECK(experiment_config_manager_);
-  auto experiment_config_type =
-      experiment_config_manager_->GetExperimentConfigType();
   if (experiment_config_type == ExperimentConfigType::kEmptyConfig) {
+    active_config_data_.clear();
     return;
   }
 
@@ -179,12 +200,11 @@ void GlobalFeatures::InitializeActiveConfigData() {
           : kExperimentConfigActiveConfigData);
 }
 
-base::FilePath GlobalFeatures::GetPrefFilePath(
-    const base::FilePath::CharType filename[],
-    const char* label) {
+base::FilePath GlobalFeatures::GetPrefFilePath(std::string_view filename,
+                                               const char* label) {
   base::FilePath path;
   CHECK(base::PathService::Get(base::DIR_CACHE, &path));
-  path = path.Append(filename);
+  path = path.AppendASCII(filename);
 
   CHECK(base::CreateDirectory(path.DirName()))
       << "Failed to create directory for " << label << ": "

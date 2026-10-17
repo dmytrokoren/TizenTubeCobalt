@@ -5,12 +5,49 @@ set -ueEx
 . $(dirname "$0")/common.sh
 
 # Using repository root as work directory.
-export WORKSPACE_COBALT="${KOKORO_ARTIFACTS_DIR}/github/src"
+if [[ -d "${KOKORO_ARTIFACTS_DIR}/github" ]]; then
+  export GCLIENT_ROOT="${KOKORO_ARTIFACTS_DIR}/github"
+else
+  export GCLIENT_ROOT="${KOKORO_ARTIFACTS_DIR}/git"
+fi
+export WORKSPACE_COBALT="${GCLIENT_ROOT}/src"
 cd "${WORKSPACE_COBALT}"
 
 # Clean up workspace on exit or error.
 trap "bash ${WORKSPACE_COBALT}/cobalt/devinfra/kokoro/bin/cleanup.sh" EXIT INT TERM
 
+# TODO(b/538697105): Unify build_mac.sh and presubmit_build_mac.sh, and consolidate
+# tvOS app code-signing logic into the unified CI build script.
+resign_tvos_app_if_needed () {
+  local target_name="$1"
+  local out_dir="$2"
+
+  if [[ -z "${KOKORO_PIPER_DIR:-}" ]]; then
+    echo "Not running in internal Kokoro (KOKORO_PIPER_DIR absent). Skipping re-signing for simulator build."
+    return 0
+  fi
+
+  local tvos_profile="${KOKORO_PIPER_DIR}/google3/googlemac/iPhone/Shared/ProvisioningProfiles/YouTube/YouTube_Dev_tvOS.mobileprovision"
+  if [[ ! -f "${tvos_profile}" ]]; then
+    echo "ERROR: Provisioning profile not found at ${tvos_profile}" >&2
+    exit 1
+  fi
+
+  echo "Embedding ${tvos_profile} into ${target_name}.app..."
+  cp -f "${tvos_profile}" "${out_dir}/${target_name}.app/embedded.mobileprovision"
+
+  # Extract entitlements from the provisioning profile
+  local entitlements_plist="${out_dir}/${target_name}_entitlements.plist"
+  if ! security cms -D -i "${tvos_profile}" 2>/dev/null | plutil -extract Entitlements xml1 -o "${entitlements_plist}" - 2>/dev/null; then
+    echo "ERROR: Failed to extract entitlements from ${tvos_profile}" >&2
+    exit 1
+  fi
+
+  # Re-sign app bundle using Kokoro's installed development certificate
+  echo "Signing ${target_name}.app for physical lab devices..."
+  codesign --force --deep --sign "Apple Development" --entitlements "${entitlements_plist}" "${out_dir}/${target_name}.app"
+  rm -f "${entitlements_plist}"
+}
 
 # Mac build script.
 pipeline () {
@@ -20,15 +57,20 @@ pipeline () {
   # Run mac specific setup steps.
   setup_mac
 
-  local gclient_root="${KOKORO_ARTIFACTS_DIR}/github"
-  git config --global --add safe.directory "${gclient_root}/src"
-  local git_url="$(git -C "${gclient_root}/src" remote get-url origin)"
+  git config --global --add safe.directory "${GCLIENT_ROOT}/src"
+  local git_url="$(git -C "${GCLIENT_ROOT}/src" remote get-url origin)"
 
   # Set up gclient and run sync.
   ##############################################################################
-  cd "${gclient_root}"
+  cd "${GCLIENT_ROOT}"
   git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git tools/depot_tools --filter=blob:none
-  export PATH="${PATH}:${gclient_root}/tools/depot_tools"
+  # TODO(b/562551706): Pinned before upstream 20aff01e (2026-09-16), which added
+  # `--end-of-options` to `git checkout`. Need to update git on runners.
+  git -C tools/depot_tools checkout 4a978d8f1f3567d5bd729aec018bfc345a14e1cd
+  export DEPOT_TOOLS_UPDATE=0
+  git config --global --add safe.directory '*'
+  source tools/depot_tools/bootstrap_python3 && bootstrap_python3
+  export PATH="${PATH}:${GCLIENT_ROOT}/tools/depot_tools"
   # Conditionally enable RBE variables
   local custom_vars=""
   if [[ "${CONFIG}" == "devel" || "${CONFIG}" == "qa" ]]; then
@@ -63,7 +105,7 @@ EOF
 
   # Run GN and Ninja.
   ##############################################################################
-  cd "${gclient_root}/src"
+  cd "${GCLIENT_ROOT}/src"
   local rbe_flag="--no-rbe"
   if [[ "${CONFIG}" == "devel" ]] || [[ "${CONFIG}" == "qa" ]]; then
     rbe_flag=""
@@ -77,33 +119,77 @@ EOF
   # Build Cobalt.
   local out_dir="${WORKSPACE_COBALT}/out/${TARGET_PLATFORM}_${CONFIG}"
 
-  # Extract test targets from JSON.
-  local test_targets_json="${WORKSPACE_COBALT}/cobalt/build/testing/targets/tvos-arm64-simulator/test_targets.json"
-  if [[ -f "${test_targets_json}" ]]; then
-    local json_targets=$(python3 -c "import json, re; print(' '.join(t.split(':')[-1] for t in json.loads(re.sub(r'//.*', '', open('${test_targets_json}').read())).get('test_targets', [])))")
-    GN_TARGET="${GN_TARGET:-} ${json_targets}"
+  # Extract test targets from JSON for non-release configs (e.g. devel).
+  local json_targets=""
+  if ! is_release_config; then
+    local test_targets_json="${WORKSPACE_COBALT}/cobalt/build/testing/targets/${TARGET_PLATFORM}/test_targets.json"
+    if [[ -f "${test_targets_json}" ]]; then
+      # Extract test targets from the JSON file (list of dicts schema)
+      # and format them as a space-separated list of target names (after the colon).
+      json_targets=$(python3 -c "import json, re; data=json.loads(re.sub(r'//.*', '', open('${test_targets_json}').read())); targets=[e['target'] for e in data if isinstance(e, dict) and 'target' in e]; print(' '.join(t.split(':')[-1] for t in targets))")
+      GN_TARGET="${GN_TARGET:-} ${json_targets}"
+    fi
   fi
 
   autoninja -C "${out_dir}" ${GN_TARGET}
 
-  if [[ "${GN_TARGET}" == *"cobalt_browsertests"* ]]; then
-    echo "Running Cobalt Browser Tests in Simulator..."
-    time "${out_dir}"/iossim \
-     -x tvos \
-     -d "Apple TV 4K (3rd generation)" \
-     -v \
-     -i \
-     -c '--gtest_filter=ContentMainRunnerImplBrowserTest.*' \
-     "${out_dir}"/cobalt_browsertests.app
+  # Package, archive, and upload to GCS.
+  ##############################################################################
+  if [[ -z "${KOKORO_BUILD_ID:-}" ]]; then
+    echo "ERROR: KOKORO_BUILD_ID environment variable is required."
+    exit 1
   fi
+  local build_id="${KOKORO_BUILD_ID}"
+  local bucket="${COBALT_GCS_BUCKET:-cobalt-unittest-storage}"
+  local gcs_archive_path="gs://${bucket}/kokoro/build/${TARGET_PLATFORM}_${CONFIG}/${build_id}/"
 
-  # TODO(b/507872651): Revisit this and see if we could shard tests on multiple bots.
-  # if has_simulator_tests; then
-  #   time python3 "${WORKSPACE_COBALT}/cobalt/tools/buildbot/run_unit_tests.py" \
-  #     --platform "${PLATFORM}" \
-  #     --config "${CONFIG}" \
-  #     --action run
-  # fi
+  for target in ${GN_TARGET}; do
+    # Extract target name (e.g. base:base_unittests -> base_unittests)
+    local target_name="${target##*:}"
+
+    if [[ "${target_name}" == "cobalt_archive" ]]; then
+      echo "Packaging and archiving tvOS library build (cobalt_archive)..."
+      local package_dir="${WORKSPACE_COBALT}/package/${TARGET_PLATFORM}_${CONFIG}"
+      mkdir -p "${package_dir}"
+      local build_info_path="${out_dir}/gen/build_info.json"
+
+      # Create release package.
+      python3 "${WORKSPACE_COBALT}/cobalt/devinfra/kokoro/build/tvos/tvos_packager.py" \
+        "${out_dir}" \
+        "${package_dir}" \
+        "${build_info_path}"
+
+      # Create tar.gz archive.
+      local archive_file="${package_dir}.tar.gz"
+      echo "Creating archive ${archive_file}..."
+      tar -czf "${archive_file}" -C "${WORKSPACE_COBALT}/package" "${TARGET_PLATFORM}_${CONFIG}"
+
+      # Upload to GCS.
+      echo "Uploading archive to ${gcs_archive_path}..."
+      "${GSUTIL}" cp "${archive_file}" "${gcs_archive_path}"
+
+    elif [[ " ${json_targets} " == *" ${target_name} "* ]] && [[ -d "${out_dir}/${target_name}.app" ]]; then
+      echo "Archiving and uploading test package ${target_name}.app..."
+
+      # Re-sign app for physical lab devices if running in internal Kokoro
+      resign_tvos_app_if_needed "${target_name}" "${out_dir}"
+
+      local archive_file="${WORKSPACE_COBALT}/package/${target_name}.tar.gz"
+      mkdir -p "${WORKSPACE_COBALT}/package"
+
+      # Create tar.gz archive including iossim if available.
+      if [[ -f "${out_dir}/iossim" ]]; then
+        echo "Including iossim in the archive..."
+        tar -czf "${archive_file}" -C "${out_dir}" "${target_name}.app" "iossim"
+      else
+        tar -czf "${archive_file}" -C "${out_dir}" "${target_name}.app"
+      fi
+
+      # Upload to GCS.
+      echo "Uploading archive ${target_name}.tar.gz to ${gcs_archive_path}..."
+      "${GSUTIL}" cp "${archive_file}" "${gcs_archive_path}"
+    fi
+  done
 }
 
 
@@ -136,11 +222,6 @@ setup_mac () {
     export SISO_CREDENTIAL_HELPER="gcloud"
   fi
 }
-
-has_simulator_tests () {
-  [[ "${PLATFORM}" == "darwin-tvos-simulator" && "${CONFIG}" == "devel" ]]
-}
-
 
 # Run the pipeline.
 pipeline

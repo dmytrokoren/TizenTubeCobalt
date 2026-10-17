@@ -18,7 +18,9 @@
 #include "cobalt/browser/h5vcc_system/h5vcc_system_impl_base.h"
 #include "cobalt/configuration/configuration.h"
 #include "starboard/common/system_property.h"
+#include "starboard/extension/low_memory_kill.h"
 #include "starboard/system.h"
+#include "starboard/window.h"
 
 namespace h5vcc_system {
 
@@ -42,7 +44,7 @@ std::string GetAdvertisingIdShared() {
   std::string advertising_id;
   advertising_id =
       starboard::GetSystemPropertyString(kSbSystemPropertyAdvertisingId);
-  DLOG_IF(INFO, advertising_id == "")
+  DLOG_IF(INFO, advertising_id.empty())
       << "Failed to get kSbSystemPropertyAdvertisingId.";
   return advertising_id;
 }
@@ -51,7 +53,7 @@ bool GetLimitAdTrackingShared() {
   bool limit_ad_tracking = false;
   std::string result =
       starboard::GetSystemPropertyString(kSbSystemPropertyLimitAdTracking);
-  if (result == "") {
+  if (result.empty()) {
     DLOG(INFO) << "Failed to get kSbSystemPropertyLimitAdTracking.";
   } else {
     limit_ad_tracking = std::atoi(result.c_str());
@@ -61,6 +63,20 @@ bool GetLimitAdTrackingShared() {
 
 std::string GetTrackingAuthorizationStatusShared() {
   return "NOT_SUPPORTED";
+}
+
+bool GetWasLowMemoryKilledShared() {
+  const auto* low_memory_kill_extension =
+      static_cast<const StarboardExtensionLowMemoryKillApi*>(
+          SbSystemGetExtension(kStarboardExtensionLowMemoryKillName));
+  if (!low_memory_kill_extension || !low_memory_kill_extension->name ||
+      strcmp(low_memory_kill_extension->name,
+             kStarboardExtensionLowMemoryKillName) != 0 ||
+      low_memory_kill_extension->version < 1 ||
+      !low_memory_kill_extension->WasLowMemoryKilled) {
+    return false;
+  }
+  return low_memory_kill_extension->WasLowMemoryKilled();
 }
 
 }  // namespace
@@ -105,12 +121,37 @@ void H5vccSystemImpl::RequestTrackingAuthorization(
   std::move(callback).Run(false);
 }
 
+void H5vccSystemImpl::GetFriendlyName(GetFriendlyNameCallback callback) {
+  CHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  std::string friendly_name =
+      starboard::GetSystemPropertyString(kSbSystemPropertyFriendlyName);
+  DLOG_IF(INFO, friendly_name.empty())
+      << "Failed to get kSbSystemPropertyFriendlyName.";
+  std::move(callback).Run(friendly_name);
+}
+
+void H5vccSystemImpl::GetScreenDiagonal(GetScreenDiagonalCallback callback) {
+  CHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  SbWindow window = GetPrimarySbWindow();
+  DLOG_IF(ERROR, !SbWindowIsValid(window))
+      << "GetScreenDiagonal: Invalid primary window.";
+  float diagonal =
+      SbWindowIsValid(window) ? SbWindowGetDiagonalSizeInInches(window) : 0.0f;
+  std::move(callback).Run(static_cast<double>(diagonal));
+}
+
 void H5vccSystemImpl::GetUserOnExitStrategy(
     GetUserOnExitStrategyCallback callback) {
   std::move(callback).Run(GetUserOnExitStrategyInternal());
 }
 
 void H5vccSystemImpl::HideSplashScreen() {}
+
+void H5vccSystemImpl::GetWasLowMemoryKilled(
+    GetWasLowMemoryKilledCallback callback) {
+  CHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  std::move(callback).Run(GetWasLowMemoryKilledShared());
+}
 
 void H5vccSystemImpl::PerformExitStrategy() {
   auto strategy = GetUserOnExitStrategyInternal();

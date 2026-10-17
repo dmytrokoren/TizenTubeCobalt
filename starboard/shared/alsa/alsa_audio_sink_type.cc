@@ -31,7 +31,6 @@
 #include "starboard/configuration.h"
 #include "starboard/shared/alsa/alsa_util.h"
 #include "starboard/shared/starboard/player/job_thread.h"
-#include "starboard/thread.h"
 
 namespace starboard {
 namespace {
@@ -212,7 +211,7 @@ AlsaAudioSink::AlsaAudioSink(
       sample_type_(sample_type),
       audio_out_thread_(JobThread::Create(
           "alsa_audio_out",
-          ThreadOptions().SetPriority(kSbThreadPriorityRealTime))),
+          ThreadOptions().SetPriority(ThreadPriority::kRealTime))),
       time_to_wait_us_(time_to_wait_us),
       destroying_(false),
       frame_buffer_(frame_buffers[0]),
@@ -403,7 +402,6 @@ class AlsaAudioSinkType : public SbAudioSinkPrivate::Type {
       int channels,
       int sampling_frequency_hz,
       SbMediaAudioSampleType audio_sample_type,
-      SbMediaAudioFrameStorageType audio_frame_storage_type,
       SbAudioSinkFrameBuffers frame_buffers,
       int frames_per_channel,
       SbAudioSinkUpdateSourceStatusFunc update_source_status_func,
@@ -428,7 +426,6 @@ SbAudioSink AlsaAudioSinkType::Create(
     int channels,
     int sampling_frequency_hz,
     SbMediaAudioSampleType audio_sample_type,
-    SbMediaAudioFrameStorageType audio_frame_storage_type,
     SbAudioSinkFrameBuffers frame_buffers,
     int frames_per_channel,
     SbAudioSinkUpdateSourceStatusFunc update_source_status_func,

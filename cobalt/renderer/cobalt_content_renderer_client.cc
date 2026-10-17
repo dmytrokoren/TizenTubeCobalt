@@ -14,11 +14,16 @@
 
 #include "cobalt/renderer/cobalt_content_renderer_client.h"
 
+#include <memory>
 #include <string>
+#include <tuple>
 #include <variant>
 
+#include "base/functional/callback_helpers.h"
 #include "base/task/bind_post_task.h"
+#include "base/threading/hang_watcher.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "cobalt/media/service/mojom/platform_window_provider.mojom.h"
 #include "cobalt/renderer/cobalt_render_frame_observer.h"
 #include "cobalt/shell/common/url_constants.h"
@@ -29,68 +34,54 @@
 #include "media/base/decoder_buffer.h"
 #include "media/base/key_systems_support_registration.h"
 #include "media/base/media_log.h"
+#include "media/base/media_switches.h"
 #include "media/base/renderer_factory.h"
+#include "media/base/starboard/experimental_features.h"
+#include "media/base/starboard/sbmedia_interface.h"
 #include "media/mojo/clients/starboard/starboard_renderer_client_factory.h"
-#include "media/starboard/decoder_buffer_allocator.h"
+#include "media/starboard/starboard_media_external_memory_allocator.h"
 #include "mojo/public/cpp/bindings/generic_pending_receiver.h"
-#include "starboard/media.h"
 #include "starboard/player.h"
 #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/public/platform/platform.h"
+#include "third_party/blink/public/platform/web_runtime_features.h"
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/web/web_security_policy.h"
 #include "third_party/blink/public/web/web_view.h"
+#include "third_party/blink/public/web/web_view_observer.h"
 #include "ui/gfx/geometry/size_conversions.h"
+
+#if BUILDFLAG(IS_IOS_TVOS)
+#include "media/starboard/url_player_demuxer.h"
+#if defined(COBALT_INTERNAL_BUILD)
+#include "cobalt/internal/cobalt/components/cdm/renderer/starboard/platform_drm_key_system_info.h"
+#endif  // defined(COBALT_INTERNAL_BUILD)
+#endif  // BUILDFLAG(IS_IOS_TVOS)
 
 namespace cobalt {
 
 namespace {
+using ::media::ExperimentalFeatures;
 
 const char kWidevineL3KeySystem[] = "com.youtube.widevine.l3";
 
-const char kH5vccSettingsKeyMediaAllowAudioWritingOnPause[] =
-    "Media.AllowAudioWritingOnPause";
-const char kH5vccSettingsKeyMediaBypassMojoForMedia[] =
-    "Media.BypassMojoForMedia";
-const char kH5vccSettingsKeyMediaDisableLowPerformanceSoftwareDecoder[] =
-    "Media.DisableLowPerformanceSoftwareDecoder";
-const char kH5vccSettingsKeyMediaEnableAllocateOnDemand[] =
-    "Media.EnableAllocateOnDemand";
-const char kH5vccSettingsKeyMediaEnableAv1StartupOptimization[] =
-    "Media.EnableAv1StartupOptimization";
-const char kH5vccSettingsKeyMediaEnableCodecOutputChecker[] =
-    "Media.EnableCodecOutputChecker";
-// TODO: b/474454335 - Remove once seek experiment is done.
-const char kH5vccSettingsKeyMediaEnableFlushDuringSeek[] =
-    "Media.EnableFlushDuringSeek";
-// TODO: b/474454335 - Remove once seek experiment is done.
-const char kH5vccSettingsKeyMediaEnableResetAudioDecoder[] =
-    "Media.EnableResetAudioDecoder";
-const char kH5vccSettingsKeyMediaEnableVideoRendererVspAdjustment[] =
-    "Media.EnableVideoRendererVspAdjustment";
-const char kH5vccSettingsKeyMediaFlushAudioTrackDuringSeek[] =
-    "Media.FlushAudioTrackDuringSeek";
-const char kH5vccSettingsKeyMediaForceDecodeToTexture[] =
-    "Media.ForceDecodeToTexture";
-const char kH5vccSettingsKeyMediaVideoDecoderInitialPrerollCount[] =
-    "Media.VideoDecoderInitialPrerollCount";
-const char kH5vccSettingsKeyMediaVideoRendererMinInputBuffers[] =
-    "Media.VideoRendererMinInputBuffers";
-const char kH5vccSettingsKeyMediaVideoRendererMinDecodedFrames[] =
-    "Media.VideoRendererMinDecodedFrames";
-const char kH5vccSettingsKeyMediaMaxSamplesPerWrite[] =
-    "Media.MaxSamplesPerWrite";
-const char kH5vccSettingsKeyMediaSkipFlushOnDecoderTeardown[] =
-    "Media.SkipFlushOnDecoderTeardown";
-const char kH5vccSettingsKeyMediaSkipVideoFramesOver60Fps[] =
-    "Media.SkipVideoFramesOver60Fps";
-const char kH5vccSettingsKeyMediaUseDualThreadsForVideo[] =
-    "Media.UseDualThreadsForVideo";
-
-using ExperimentalFeatures =
-    ::media::StarboardRendererConfig::ExperimentalFeatures;
-using H5vccSettingValue = std::variant<std::string, int64_t>;
+ExperimentalFeatures ParseH5vccSettings(mojom::SettingsPtr settings) {
+  ExperimentalFeatures::Map h5vcc_settings;
+  for (auto& [key, value] : settings->settings) {
+    if (!value) {
+      continue;
+    }
+    if (value->is_int_value()) {
+      h5vcc_settings.emplace(key, value->get_int_value());
+    } else if (value->is_string_value()) {
+      h5vcc_settings.emplace(key, std::move(value->get_string_value()));
+    } else {
+      NOTREACHED();
+    }
+  }
+  return ExperimentalFeatures(std::move(h5vcc_settings));
+}
 
 // TODO(b/376542844): Eliminate the usage of hardcoded MIME string once we
 // support to query codec capabilities with configs. The profile information
@@ -148,139 +139,6 @@ std::string GetMimeFromAudioType(const ::media::AudioType& type) {
   return codecs;
 }
 
-std::map<std::string, H5vccSettingValue> ParseH5vccSettings(
-    cobalt::mojom::SettingsPtr settings) {
-  std::map<std::string, H5vccSettingValue> h5vcc_settings;
-  for (auto& [key, value] : settings->settings) {
-    if (value->is_string_value()) {
-      h5vcc_settings.emplace(key, std::move(value->get_string_value()));
-    } else if (value->is_int_value()) {
-      h5vcc_settings.emplace(key, value->get_int_value());
-    } else {
-      NOTREACHED();
-    }
-  }
-  return h5vcc_settings;
-}
-
-template <typename T>
-const T* GetSettingValue(
-    const std::map<std::string, H5vccSettingValue>& settings,
-    const std::string& key) {
-  auto it = settings.find(key);
-  if (it == settings.end()) {
-    return nullptr;
-  }
-  return std::get_if<T>(&it->second);
-}
-
-// Experiment framework uses 0 as the sentinel value for unset.
-// e.g.)
-// http://go/latestexpcl/player_web/features/player_web_cobalt.impl.gcl;l=332;rcl=862772714
-constexpr int kH5vccUnsetSentinel = 0;
-
-std::optional<int> ProcessRangedIntH5vccSetting(
-    const std::map<std::string, H5vccSettingValue>& settings,
-    const char* key,
-    int min_val,
-    int max_val,
-    int unset_sentinel) {
-  auto* val = GetSettingValue<int64_t>(settings, key);
-  if (!val) {
-    return std::nullopt;
-  }
-  if (*val == unset_sentinel) {
-    LOG(INFO) << "Value for " << key << " matches unset sentinel (" << *val
-              << "); falling back to system default.";
-    return std::nullopt;
-  }
-  if (*val < min_val || max_val < *val) {
-    LOG(WARNING) << "Invalid value for " << key << ": " << *val;
-    return std::nullopt;
-  }
-
-  return static_cast<int>(*val);
-}
-
-ExperimentalFeatures ProcessH5vccSettings(
-    const std::map<std::string, H5vccSettingValue>& settings) {
-  ExperimentalFeatures parsed;
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaEnableAllocateOnDemand)) {
-    bool enable_allocate_on_demand = *val != 0;
-    auto* allocator = ::media::DecoderBufferAllocator::Get();
-    CHECK(allocator);
-    allocator->SetAllocateOnDemand(enable_allocate_on_demand);
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaAllowAudioWritingOnPause)) {
-    parsed.allow_audio_writing_on_pause = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaBypassMojoForMedia)) {
-    parsed.bypass_mojo_for_media = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings,
-          kH5vccSettingsKeyMediaDisableLowPerformanceSoftwareDecoder)) {
-    parsed.disable_low_performance_sw_decoder = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaEnableAv1StartupOptimization)) {
-    parsed.enable_av1_startup_optimization = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaEnableCodecOutputChecker)) {
-    parsed.enable_codec_output_checker = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaEnableFlushDuringSeek)) {
-    parsed.enable_flush_during_seek = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaEnableResetAudioDecoder)) {
-    parsed.enable_reset_audio_decoder = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaEnableVideoRendererVspAdjustment)) {
-    parsed.enable_video_renderer_vsp_adjustment = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaFlushAudioTrackDuringSeek)) {
-    parsed.flush_audio_track_during_seek = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaForceDecodeToTexture)) {
-    parsed.force_decode_to_texture = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaSkipFlushOnDecoderTeardown)) {
-    parsed.skip_flush_on_decoder_teardown = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaSkipVideoFramesOver60Fps)) {
-    parsed.skip_video_frames_over_60_fps = *val != 0;
-  }
-  if (auto* val = GetSettingValue<int64_t>(
-          settings, kH5vccSettingsKeyMediaUseDualThreadsForVideo)) {
-    parsed.use_dual_threads_for_video = *val != 0;
-  }
-
-  parsed.video_decoder_initial_preroll_count = ProcessRangedIntH5vccSetting(
-      settings, kH5vccSettingsKeyMediaVideoDecoderInitialPrerollCount,
-      /*min_val=*/1, /*max_val=*/100'000, kH5vccUnsetSentinel);
-  parsed.video_renderer_min_input_buffers = ProcessRangedIntH5vccSetting(
-      settings, kH5vccSettingsKeyMediaVideoRendererMinInputBuffers,
-      /*min_val=*/1, /*max_val=*/100'000, kH5vccUnsetSentinel);
-  parsed.video_renderer_min_decoded_frames = ProcessRangedIntH5vccSetting(
-      settings, kH5vccSettingsKeyMediaVideoRendererMinDecodedFrames,
-      /*min_val=*/1, /*max_val=*/100'000, kH5vccUnsetSentinel);
-  parsed.max_samples_per_write = ProcessRangedIntH5vccSetting(
-      settings, kH5vccSettingsKeyMediaMaxSamplesPerWrite, /*min_val=*/1,
-      /*max_val=*/100'000, kH5vccUnsetSentinel);
-  return parsed;
-}
-
 class CobaltWidevineL3KeySystemInfo : public cdm::WidevineKeySystemInfo {
  public:
   using cdm::WidevineKeySystemInfo::WidevineKeySystemInfo;
@@ -292,6 +150,34 @@ class CobaltWidevineL3KeySystemInfo : public cdm::WidevineKeySystemInfo {
   bool IsSupportedKeySystem(const std::string& key_system) const override {
     return key_system == kWidevineL3KeySystem;
   }
+};
+
+// Holds a deferred media load until the page is visible again, then runs it.
+// Deletes itself once the load has run, or when the WebView is destroyed.
+class MediaLoadDeferrer : public blink::WebViewObserver {
+ public:
+  MediaLoadDeferrer(blink::WebView* web_view, base::OnceClosure load_cb)
+      : blink::WebViewObserver(web_view), load_cb_(std::move(load_cb)) {}
+
+  MediaLoadDeferrer(const MediaLoadDeferrer&) = delete;
+  MediaLoadDeferrer& operator=(const MediaLoadDeferrer&) = delete;
+
+  // blink::WebViewObserver implementation.
+  void OnDestruct() override { delete this; }
+
+  void OnPageVisibilityChanged(
+      blink::mojom::PageVisibilityState visibility_state) override {
+    if (visibility_state != blink::mojom::PageVisibilityState::kVisible) {
+      return;
+    }
+    std::move(load_cb_).Run();
+    delete this;
+  }
+
+ private:
+  ~MediaLoadDeferrer() override = default;
+
+  base::OnceClosure load_cb_;
 };
 
 }  // namespace
@@ -371,10 +257,43 @@ void CobaltContentRendererClient::RenderThreadStarted() {
   // Register h5vcc scheme for renders to use Fetch API.
   blink::WebSecurityPolicy::RegisterURLSchemeAsSupportingFetchAPI(
       blink::WebString::FromASCII(content::kH5vccEmbeddedScheme));
+
+  // Register platform-specific DRM init data type string.
+#if BUILDFLAG(IS_IOS_TVOS) && defined(COBALT_INTERNAL_BUILD)
+  RegisterPlatformInitDataTypes();
+#endif  // BUILDFLAG(IS_IOS_TVOS) && defined(COBALT_INTERNAL_BUILD)
+}
+
+void CobaltContentRendererClient::
+    SetRuntimeFeaturesDefaultsBeforeBlinkInitialization() {
+  // Cobalt deliberately skips construction of several Content services (see
+  // the IS_COBALT carve-outs in content/browser/browser_main_loop.cc). Any web
+  // API whose backing service is absent must also be hidden from script.
+  // Leaving the API visible makes feature detection report support that does
+  // not exist, and the resulting call reaches a browser-side handler that has
+  // no service behind it.
+  //
+  // SpeechRecognitionManagerImpl is not created for Cobalt, so hide the Web
+  // Speech *recognition* entry points. `webkitSpeechRecognition` is a
+  // LegacyWindowAlias gated on this feature, and the `SpeechRecognition`
+  // interface itself is [LegacyNoInterfaceObject], so disabling the feature
+  // removes the only way to construct one. Script then observes a catchable
+  // ReferenceError/TypeError, which is what callers that feature-detect expect.
+  //
+  // This is the only guard: SpeechRecognitionDispatcherHost is left unmodified
+  // and would dereference the null manager if a session were started. Command
+  // line switches are applied after this function, so
+  // --enable-blink-features=ScriptedSpeechRecognition would re-expose the API;
+  // Cobalt does not pass that switch, and release builds ignore intent-supplied
+  // command line arguments.
+  //
+  // Note this does not affect speech *synthesis* (ScriptedSpeechSynthesis),
+  // which Cobalt still supports.
+  blink::WebRuntimeFeatures::EnableFeatureFromString(
+      "ScriptedSpeechRecognition", /*enable=*/false);
 }
 
 void AddStarboardCmaKeySystems(::media::KeySystemInfos* key_system_infos) {
-  CHECK(content::RenderThread::IsMainThread());
   ::media::SupportedCodecs codecs = GetStarboardEmeSupportedCodecs();
 
   using Robustness = cdm::WidevineKeySystemInfo::Robustness;
@@ -385,7 +304,8 @@ void AddStarboardCmaKeySystems(::media::KeySystemInfos* key_system_infos) {
   const base::flat_set<::media::CdmSessionType> kSessionTypes = {
       ::media::CdmSessionType::kTemporary};
 
-  key_system_infos->emplace_back(new cdm::WidevineKeySystemInfo(
+#if !BUILDFLAG(IS_IOS_TVOS)
+  key_system_infos->push_back(std::make_unique<cdm::WidevineKeySystemInfo>(
       codecs,                        // Regular codecs.
       kEncryptionSchemes,            // Encryption schemes.
       kSessionTypes,                 // Session types.
@@ -397,24 +317,38 @@ void AddStarboardCmaKeySystems(::media::KeySystemInfos* key_system_infos) {
       ::media::EmeFeatureSupport::ALWAYS_ENABLED,    // Persistent state.
       ::media::EmeFeatureSupport::ALWAYS_ENABLED));  // Distinctive identifier.
 
-  key_system_infos->emplace_back(new CobaltWidevineL3KeySystemInfo(
-      codecs,                        // Regular codecs.
-      kEncryptionSchemes,            // Encryption schemes.
-      kSessionTypes,                 // Session types.
-      {},                            // Hardware secure codecs.
-      {},                            // Hardware secure encryption schemes.
-      {},                            // Hardware secure session types.
-      Robustness::SW_SECURE_CRYPTO,  // Max audio robustness.
-      Robustness::SW_SECURE_DECODE,  // Max video robustness.
+#endif  // !BUILDFLAG(IS_IOS_TVOS)
+
+  key_system_infos->push_back(std::make_unique<CobaltWidevineL3KeySystemInfo>(
+      codecs,                                        // Regular codecs.
+      kEncryptionSchemes,                            // Encryption schemes.
+      kSessionTypes,                                 // Session types.
+      ::media::SupportedCodecs{},                    // Hardware secure codecs.
+      base::flat_set<::media::EncryptionScheme>{},   // Hardware secure
+                                                     // encryption schemes.
+      base::flat_set<::media::CdmSessionType>{},     // Hardware secure session
+                                                     // types.
+      Robustness::SW_SECURE_CRYPTO,                  // Max audio robustness.
+      Robustness::SW_SECURE_DECODE,                  // Max video robustness.
       ::media::EmeFeatureSupport::ALWAYS_ENABLED,    // Persistent state.
-      ::media::EmeFeatureSupport::ALWAYS_ENABLED));  // Distinctive identifier.
+      ::media::EmeFeatureSupport::ALWAYS_ENABLED));  // Distinctive
+                                                     // identifier.
+
+#if BUILDFLAG(IS_IOS_TVOS) && defined(COBALT_INTERNAL_BUILD)
+  key_system_infos->push_back(std::make_unique<cdm::PlatformDrmKeySystemInfo>(
+      codecs,                                        // Regular codecs.
+      kEncryptionSchemes,                            // Encryption schemes.
+      codecs,                                        // Hardware secure codecs.
+      ::media::EmeFeatureSupport::ALWAYS_ENABLED,    // Persistent state.
+      ::media::EmeFeatureSupport::ALWAYS_ENABLED));  // Distinctive
+                                                     // identifier.
+#endif  // BUILDFLAG(IS_IOS_TVOS) && defined(COBALT_INTERNAL_BUILD)
 }
 
 std::unique_ptr<::media::KeySystemSupportRegistration>
 CobaltContentRendererClient::GetSupportedKeySystems(
     content::RenderFrame* render_frame,
     ::media::GetSupportedKeySystemsCB cb) {
-  CHECK(content::RenderThread::IsMainThread());
   ::media::KeySystemInfos key_systems;
   AddStarboardCmaKeySystems(&key_systems);
   std::move(cb).Run(std::move(key_systems));
@@ -423,11 +357,11 @@ CobaltContentRendererClient::GetSupportedKeySystems(
 
 bool CobaltContentRendererClient::IsDecoderSupportedAudioType(
     const ::media::AudioType& type) {
-  CHECK(content::RenderThread::IsMainThread());
   std::string mime = GetMimeFromAudioType(type);
   SbMediaSupportType support_type = kSbMediaSupportTypeNotSupported;
   if (!mime.empty()) {
-    support_type = SbMediaCanPlayMimeAndKeySystem(mime.c_str(), "");
+    support_type = ::media::GetSbMediaInterface()->CanPlayMimeAndKeySystem(
+        mime.c_str(), "");
   }
   bool result = support_type != kSbMediaSupportTypeNotSupported;
   LOG(INFO) << __func__ << "(" << type.codec << ") -> "
@@ -437,16 +371,23 @@ bool CobaltContentRendererClient::IsDecoderSupportedAudioType(
 
 bool CobaltContentRendererClient::IsDecoderSupportedVideoType(
     const ::media::VideoType& type) {
-  CHECK(content::RenderThread::IsMainThread());
   std::string mime = GetMimeFromVideoType(type);
   SbMediaSupportType support_type = kSbMediaSupportTypeNotSupported;
   if (!mime.empty()) {
-    support_type = SbMediaCanPlayMimeAndKeySystem(mime.c_str(), "");
+    support_type = ::media::GetSbMediaInterface()->CanPlayMimeAndKeySystem(
+        mime.c_str(), "");
   }
   bool result = support_type != kSbMediaSupportTypeNotSupported;
   LOG(INFO) << __func__ << "(" << type.codec << ") -> "
             << (result ? "true" : "false");
   return result;
+}
+
+::media::ExternalMemoryAllocator*
+CobaltContentRendererClient::GetMediaAllocator() {
+  base::AutoLock scoped_lock(media_allocator_lock_);
+  return is_external_memory_pool_enabled_ ? media_memory_allocator_.get()
+                                          : nullptr;
 }
 
 void CobaltContentRendererClient::RunScriptsAtDocumentStart(
@@ -481,23 +422,86 @@ void CobaltContentRendererClient::GetStarboardRendererFactoryTraits(
   cobalt::mojom::SettingsPtr settings;
   ExperimentalFeatures experimental_features;
   if ((*h5vcc_settings_remote_)->GetSettings(&settings) && settings) {
-    auto h5vcc_settings = ParseH5vccSettings(std::move(settings));
-    experimental_features = ProcessH5vccSettings(h5vcc_settings);
+    experimental_features = ParseH5vccSettings(std::move(settings));
   }
   renderer_factory_traits->experimental_features = experimental_features;
+
+  // The feature is enabled by default; H5vcc settings still take precedence
+  // when the web app explicitly sets the key, so external memory pooling can
+  // be toggled dynamically (e.g. for a holdback experiment). When the key is
+  // unset, fall back to the command-line/default feature state.
+  // TODO: b/378106931 - Once the H5vcc override is no longer needed, move this
+  // initialization back to
+  // CobaltContentRendererClient::RenderThreadStarted().
+  // The external memory pool routes allocations to DecoderBufferAllocator;
+  // disable it when DecoderBufferAllocator is disabled for PartitionAlloc.
+  const bool enable_external_pool =
+      !base::FeatureList::IsEnabled(
+          ::media::kCobaltDisableDecoderBufferAllocator) &&
+      experimental_features.Get(::media::kMediaUseExternalMediaMemoryPool)
+          .value_or(base::FeatureList::IsEnabled(
+              ::media::kCobaltUseExternalMediaMemoryPool));
+  {
+    base::AutoLock scoped_lock(media_allocator_lock_);
+    is_external_memory_pool_enabled_ = enable_external_pool;
+    if (is_external_memory_pool_enabled_ && !media_memory_allocator_) {
+      media_memory_allocator_ =
+          std::make_unique<::media::StarboardMediaExternalMemoryAllocator>();
+    }
+  }
 }
 
 void CobaltContentRendererClient::PostSandboxInitialized() {
   CHECK(content::RenderThread::IsMainThread());
 
   // Register the current thread (which is the InProcessRendererThread in
-  // single- process mode) for hang watching. Store the ScopedClosureRunner to
-  // keep the registration active until this client object is destroyed.
+  // single-process mode) for hang watching. HangWatcher is a leaky singleton,
+  // and InProcessRendererThread runs for the duration of the web application.
+  // Release the ScopedClosureRunner instead of storing it on
+  // CobaltContentRendererClient (which is destroyed on the main thread during
+  // shutdown), and avoid thread_local ScopedClosureRunner which pulls in
+  // __cxa_thread_atexit_impl (an illegal API leak in Evergreen).
   if (base::HangWatcher::IsEnabled() && base::HangWatcher::GetInstance()) {
     // Use kRendererThread as the type for this in-process renderer thread.
-    unregister_thread_closure = base::HangWatcher::RegisterThread(
-        base::HangWatcher::ThreadType::kRendererThread);
+    base::ScopedClosureRunner unregister_thread_closure =
+        base::HangWatcher::RegisterThread(
+            base::HangWatcher::ThreadType::kRendererThread);
+    std::ignore = unregister_thread_closure.Release();
   }
+}
+
+std::unique_ptr<::media::Demuxer>
+CobaltContentRendererClient::OverrideDemuxerForUrl(
+    content::RenderFrame* render_frame,
+    const GURL& url,
+    scoped_refptr<base::SequencedTaskRunner> task_runner) {
+#if BUILDFLAG(IS_IOS_TVOS)
+  if (::media::IsHlsUrl(url)) {
+    return std::make_unique<::media::UrlPlayerDemuxer>(std::move(task_runner),
+                                                       url);
+  }
+#endif  // BUILDFLAG(IS_IOS_TVOS)
+  return nullptr;
+}
+
+bool CobaltContentRendererClient::DeferMediaLoad(
+    content::RenderFrame* render_frame,
+    bool has_played_media_before,
+    base::OnceClosure closure) {
+  CHECK(content::RenderThread::IsMainThread());
+  // The page is hidden while the app is concealed or preloading, when there is
+  // no window to create an SbPlayer on, so hold every media load until the
+  // page is visible again (b/568868974). Unlike Chrome, this includes pages
+  // that have played media before. Players that already exist are suspended
+  // by ShellPlatformDelegate::OnConceal().
+  blink::WebView* web_view = render_frame->GetWebView();
+  if (web_view && web_view->GetVisibilityState() !=
+                      blink::mojom::PageVisibilityState::kVisible) {
+    new MediaLoadDeferrer(web_view, std::move(closure));
+    return true;
+  }
+  std::move(closure).Run();
+  return false;
 }
 
 }  // namespace cobalt

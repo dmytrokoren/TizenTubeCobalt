@@ -53,7 +53,6 @@ void H5vccTizentubeImpl::InstallAppFromURL(const std::string& url, InstallAppFro
     std::move(callback).Run(result);
     return;
   #endif  // BUILDFLAG(IS_ANDROID)
-  std::move(callback).Run(false); // Placeholder implementation
 }
 
 void H5vccTizentubeImpl::GetVersion(GetVersionCallback callback) {
@@ -64,7 +63,6 @@ void H5vccTizentubeImpl::GetVersion(GetVersionCallback callback) {
     std::move(callback).Run(version);
     return;
   #endif  // BUILDFLAG(IS_ANDROID)
-  std::move(callback).Run("1.0.0"); // Placeholder implementation
 }
 
 void H5vccTizentubeImpl::GetArchitecture(GetArchitectureCallback callback) {
@@ -75,7 +73,6 @@ void H5vccTizentubeImpl::GetArchitecture(GetArchitectureCallback callback) {
     std::move(callback).Run(architecture);
     return;
   #endif  // BUILDFLAG(IS_ANDROID)
-  std::move(callback).Run("x86_64"); // Placeholder implementation
 }
 
 void H5vccTizentubeImpl::GetBrandAndModel(GetBrandAndModelCallback callback) {
@@ -86,7 +83,6 @@ void H5vccTizentubeImpl::GetBrandAndModel(GetBrandAndModelCallback callback) {
     std::move(callback).Run(brand_and_model);
     return;
   #endif  // BUILDFLAG(IS_ANDROID)
-  std::move(callback).Run("Example Brand Example Model"); // Placeholder implementation
 }
 
 void H5vccTizentubeImpl::SetFrameRate(float frame_rate) {

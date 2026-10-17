@@ -16,32 +16,44 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdio>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/allocator/partition_allocator/src/partition_alloc/memory_reclaimer.h"
 #include "base/at_exit.h"
 #include "base/command_line.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/memory_pressure_listener.h"
 #include "base/no_destructor.h"
+#include "base/run_loop.h"
+#include "base/synchronization/lock.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/threading/platform_thread.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "cobalt/app/app_event_delegate.h"
+#include "cobalt/shell/common/shell_switches.h"
+
+#if BUILDFLAG(USE_EVERGREEN)
+#include "cobalt/updater/updater_module.h"
+#endif
 #include "cobalt/browser/cobalt_content_browser_client.h"
 #include "cobalt/browser/h5vcc_accessibility/h5vcc_accessibility_manager.h"
+#include "cobalt/browser/h5vcc_memory/low_memory_manager.h"
 #include "cobalt/browser/h5vcc_runtime/deep_link_manager.h"
+#include "cobalt/browser/lifecycle/cobalt_lifecycle_manager.h"
 #include "cobalt/shell/browser/shell.h"
+#include "content/public/app/content_main.h"
+#include "content/public/app/content_main_runner.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/network_service_instance.h"
 #include "net/base/network_change_notifier_passive.h"
-
-#if !BUILDFLAG(IS_ANDROID)
-#include "content/public/app/content_main.h"
-#include "content/public/app/content_main_runner.h"
-#endif
 
 #if BUILDFLAG(IS_STARBOARD)
 #include "cobalt/app/cobalt_switch_defaults.h"
@@ -49,15 +61,19 @@
 #include "ui/ozone/platform/starboard/platform_event_source_starboard.h"
 #endif
 
-#if BUILDFLAG(IS_COBALT_HERMETIC_BUILD)
-#include <init_musl.h>
 #if BUILDFLAG(USE_EVERGREEN)
 #include "cobalt/browser/loader_app_metrics.h"
 #endif
-#endif
 
 namespace cobalt {
-#if !BUILDFLAG(IS_ANDROID)
+
+namespace {
+// A timeout of 2 seconds was chosen to be long enough to allow for any
+// normal operations to complete, but short enough to avoid unnecessary
+// user-perceived delays.
+constexpr base::TimeDelta kTransitionTimeout = base::Seconds(2);
+}  // namespace
+
 namespace {
 content::ContentMainRunner* GetContentMainRunner() {
   static base::NoDestructor<std::unique_ptr<content::ContentMainRunner>>
@@ -65,23 +81,42 @@ content::ContentMainRunner* GetContentMainRunner() {
   return main_runner->get();
 }
 }  // namespace
-#endif
 
-class AppEventRunnerImpl : public AppEventRunner {
+class AppEventRunnerImpl : public AppEventRunner,
+                           public CobaltLifecycleManagerObserver {
  public:
-  AppEventRunnerImpl() = default;
-  ~AppEventRunnerImpl() override = default;
-
-  void InitializeSystem() override {
-    exit_manager_ = std::make_unique<base::AtExitManager>();
+  AppEventRunnerImpl() {
+    CobaltLifecycleManager::GetInstance()->AddObserver(this);
+  }
+  ~AppEventRunnerImpl() override {
+    CobaltLifecycleManager::GetInstance()->RemoveObserver(this);
   }
 
-  void CreateMainDelegate(absl::optional<int64_t> startup_timestamp,
+  PendingAck pending_ack() const override {
+    base::AutoLock lock(lock_);
+    return pending_ack_;
+  }
+
+  void InitializeSystem() override {
+#if !BUILDFLAG(IS_ANDROID)
+    exit_manager_ = std::make_unique<base::AtExitManager>();
+#endif
+  }
+
+  void CreateMainDelegate(std::optional<int64_t> startup_timestamp,
                           bool is_visible,
                           const char* initial_deep_link) override {
     content_main_delegate_ = std::make_unique<cobalt::CobaltMainDelegate>(
         startup_timestamp, initial_deep_link,
         false /* is_content_browsertests */, is_visible);
+  }
+
+  std::vector<content::WebContents*> GetWebContents() override {
+    std::vector<content::WebContents*> result;
+    for (auto* shell : content::Shell::windows()) {
+      result.push_back(shell->web_contents());
+    }
+    return result;
   }
 
   cobalt::CobaltMainDelegate* GetMainDelegate() override {
@@ -90,9 +125,6 @@ class AppEventRunnerImpl : public AppEventRunner {
 
   void DoStart(const SbEvent* event) override {
     SbEventStartData* data = static_cast<SbEventStartData*>(event->data);
-#if BUILDFLAG(IS_COBALT_HERMETIC_BUILD)
-    init_musl();
-#endif
     InitializeSystem();
 #if BUILDFLAG(IS_STARBOARD)
     platform_event_source_ =
@@ -113,9 +145,13 @@ class AppEventRunnerImpl : public AppEventRunner {
   }
 
   void DoStop() override {
+    base::ScopedAllowBaseSyncPrimitivesOutsideBlockingScope allow_blocking;
+
     content::Shell::OnStop();
 
     content::Shell::Shutdown();
+
+    base::RunLoop().RunUntilIdle();
 
     if (content_main_delegate_) {
       content_main_delegate_->Shutdown();
@@ -132,6 +168,9 @@ class AppEventRunnerImpl : public AppEventRunner {
       main_runner_->Shutdown();
     }
 #endif
+
+    // Flush all open stdio streams before the process exits.
+    std::fflush(nullptr);
 
     // Destroy only after main_runner_/ContentMainRunnerImpl is shutdown
     // as the delegate is used internally.
@@ -159,6 +198,7 @@ class AppEventRunnerImpl : public AppEventRunner {
     // (e.g. CobaltActivity.onResume) which propagate directly to Chromium's
     // WindowAndroid.
 #endif
+    WaitForAck(PendingAck::kBlur);
   }
 
   void DoFocus() override {
@@ -174,19 +214,66 @@ class AppEventRunnerImpl : public AppEventRunner {
     content::Shell::OnFocus();
   }
 
-  void DoConceal() override { content::Shell::OnConceal(); }
+  void DoConceal() override {
+    content::Shell::OnConceal();
+    WaitForAck(PendingAck::kConceal);
 
-  void DoReveal() override { content::Shell::OnReveal(); }
-
-  void DoFreeze() override {
-    content::Shell::OnFreeze();
-    auto* client = cobalt::CobaltContentBrowserClient::Get();
-    if (client) {
-      client->FlushCookiesAndLocalStorage(base::DoNothing());
-    }
+    // Run memory pressure notification and partition alloc reclamation in a
+    // posted task. This prevents slowing down the synchronous conceal step.
+    // We are guaranteed that this task will be executed before any subsequent
+    // DoFreeze() returns, because DoFreeze invokes a blocking RunLoop inside
+    // WaitForAck(PendingAck::kCookieFlush) which will drain this task queue.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](AppEventRunner* runner) {
+              DCHECK(!runner->is_visible());
+              if (!runner->is_visible()) {
+                base::MemoryPressureListener::NotifyMemoryPressure(
+                    base::MemoryPressureListener::
+                        MEMORY_PRESSURE_LEVEL_CRITICAL);
+                // Chromium's memory pressure listeners are invoked
+                // asynchronously on all threads. Explicitly calling
+                // ReclaimAll here forces PartitionAlloc to
+                // synchronously purge its thread caches for the main
+                // thread right now, avoiding relying solely on the
+                // asynchronous signal propagation.
+                ::partition_alloc::MemoryReclaimer::Instance()->ReclaimAll();
+              }
+            },
+            this));
   }
 
-  void DoUnfreeze() override { content::Shell::OnUnfreeze(); }
+  void DoReveal() override {
+    content::Shell::OnReveal();
+    WaitForAck(PendingAck::kReveal);
+  }
+
+  void DoFreeze(base::OnceClosure callback) override {
+    content::Shell::OnFreeze();
+    WaitForAck(PendingAck::kFreeze);
+    WaitForAck(PendingAck::kCookieFlush);
+    std::move(callback).Run();
+#if BUILDFLAG(USE_EVERGREEN)
+    cobalt::updater::UpdaterModule* updater_module =
+        cobalt::updater::UpdaterModule::GetInstance();
+    if (updater_module) {
+      updater_module->Suspend();
+    }
+#endif
+  }
+
+  void DoUnfreeze() override {
+    content::Shell::OnUnfreeze();
+    WaitForAck(PendingAck::kUnfreeze);
+#if BUILDFLAG(USE_EVERGREEN)
+    cobalt::updater::UpdaterModule* updater_module =
+        cobalt::updater::UpdaterModule::GetInstance();
+    if (updater_module) {
+      updater_module->Resume();
+    }
+#endif
+  }
 
   void OnInput(const SbEvent* event) override {
     CHECK(is_running());
@@ -213,6 +300,10 @@ class AppEventRunnerImpl : public AppEventRunner {
     CHECK(is_running());
     base::MemoryPressureListener::NotifyMemoryPressure(
         base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL);
+
+    // Forward event to JavaScript layer via LowMemoryManager before reclaiming
+    // memory.
+    cobalt::browser::LowMemoryManager::GetInstance()->OnLowMemory();
 
     // Chromium internally calls Reclaim/ReclaimNormal at regular interval
     // to claim free memory. Using ReclaimAll is more aggressive.
@@ -249,7 +340,6 @@ class AppEventRunnerImpl : public AppEventRunner {
 
   void OnOsNetworkConnectedDisconnected(const SbEvent* event) override {
     CHECK(is_running());
-#if BUILDFLAG(IS_STARBOARD)
     auto* notifier = content::GetNetworkChangeNotifier();
     if (notifier) {
       auto* passive_notifier =
@@ -268,7 +358,6 @@ class AppEventRunnerImpl : public AppEventRunner {
         passive_notifier->OnIPAddressChanged();
       }
     }
-#endif
   }
 
   void OnDateTimeConfigurationChanged(const SbEvent* event) override {
@@ -282,7 +371,7 @@ class AppEventRunnerImpl : public AppEventRunner {
   }
 
  private:
-  int Run(absl::optional<int64_t> startup_timestamp,
+  int Run(std::optional<int64_t> startup_timestamp,
           bool is_visible,
           int argc,
           const char** argv,
@@ -292,14 +381,36 @@ class AppEventRunnerImpl : public AppEventRunner {
 #if BUILDFLAG(IS_STARBOARD)
     cobalt::CommandLinePreprocessor init_cmd_line(argc, argv);
     const auto& init_argv = init_cmd_line.argv();
-#if BUILDFLAG(COBALT_IS_RELEASE_BUILD)
-    logging::SetMinLogLevel(logging::LOGGING_FATAL);
-#endif
+
     std::vector<const char*> args;
     for (const auto& arg : init_argv) {
       args.push_back(arg.c_str());
     }
+
+#if BUILDFLAG(COBALT_IS_RELEASE_BUILD)
+    logging::SetMinLogLevel(logging::LOGGING_FATAL);
+
+    // In Gold builds, we enforce that this URL points strictly to YouTube TV.
+    if (!init_argv.empty()) {
+      // CommandLinePreprocessor makes the startup URL is the last argument.
+      const std::string& startup_url = init_argv.back();
+      if (startup_url.find(::switches::kDefaultURL) != 0) {
+        LOG(WARNING) << "Invalid Gold startup URL. Rerouting to deep link: "
+                     << startup_url;
+
+        // Override the deep link if the platform didn't provide one already.
+        if (!initial_deep_link) {
+          initial_deep_link = startup_url.c_str();
+        }
+
+        // Sanitize the startup URL that the Chromium sandbox will boot with.
+        args.back() = ::switches::kDefaultURL;
+      }
+    }
 #endif
+
+#endif
+
     if (initial_deep_link) {
       auto* manager = cobalt::browser::DeepLinkManager::GetInstance();
       manager->set_deep_link(initial_deep_link);
@@ -321,23 +432,123 @@ class AppEventRunnerImpl : public AppEventRunner {
     params.argc = argc;
     params.argv = argv;
 #endif
+#endif
 
     main_runner_ = GetContentMainRunner();
     return content::RunContentProcess(std::move(params), main_runner_);
-#else
-    return 0;
-#endif
   }
 
   std::unique_ptr<base::AtExitManager> exit_manager_;
-#if !BUILDFLAG(IS_ANDROID)
+  // We own and manage the lifecycle of the ContentMainRunner. On non-Android
+  // platforms we explicitly shut it down in DoStop().
   content::ContentMainRunner* main_runner_ = nullptr;
-#endif
+
   std::unique_ptr<cobalt::CobaltMainDelegate> content_main_delegate_;
 
 #if BUILDFLAG(IS_STARBOARD)
   std::unique_ptr<ui::PlatformEventSourceStarboard> platform_event_source_;
 #endif
+
+  void OnCookieFlushComplete() {
+    base::AutoLock lock(lock_);
+    if (quit_closure_) {
+      std::move(quit_closure_).Run();
+    }
+  }
+
+  void WaitForAck(PendingAck ack_type) {
+    base::ScopedAllowBaseSyncPrimitivesOutsideBlockingScope allow_blocking;
+    base::AutoLock lock(lock_);
+    pending_ack_ = ack_type;
+
+    if (ack_type == PendingAck::kCookieFlush) {
+      auto* client = cobalt::CobaltContentBrowserClient::Get();
+      if (client) {
+        client->FlushCookiesAndLocalStorage(
+            base::BindOnce(&AppEventRunnerImpl::OnCookieFlushComplete,
+                           base::Unretained(this)));
+      } else {
+        pending_ack_ = PendingAck::kNone;
+        return;
+      }
+    } else {
+      for (auto* web_contents : GetWebContents()) {
+        CobaltLifecycleManager::GetInstance()->StartWaitingForAck(web_contents,
+                                                                  ack_type);
+      }
+    }
+
+    base::RunLoop run_loop(base::RunLoop::Type::kNestableTasksAllowed);
+    quit_closure_ = run_loop.QuitClosure();
+
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE, run_loop.QuitClosure(), kTransitionTimeout);
+
+    {
+      base::AutoUnlock unlock(lock_);
+      run_loop.Run();
+    }
+    if (quit_closure_) {
+      LOG(WARNING) << "WaitForAck timed out: timeout(msec)="
+                   << kTransitionTimeout.InMilliseconds()
+                   << ", ack_type=" << ack_type;
+      quit_closure_.Reset();
+    }
+    pending_ack_ = PendingAck::kNone;
+  }
+
+  // CobaltLifecycleManagerObserver implementation.
+  void OnAllFramesVisible(content::WebContents* web_contents) override {
+    base::AutoLock lock(lock_);
+    if (pending_ack_ == PendingAck::kReveal) {
+      if (quit_closure_) {
+        std::move(quit_closure_).Run();
+      }
+    }
+  }
+
+  // Called by CobaltLifecycleManager when the full conceal sequence (renderer
+  // frame ACKs, platform window unmapping, and GPU resource/EGLDisplay
+  // teardown) has completed, unblocking WaitForAck(PendingAck::kConceal).
+  void OnConcealCompleted(content::WebContents* web_contents) override {
+    base::AutoLock lock(lock_);
+    if (pending_ack_ == PendingAck::kConceal) {
+      if (quit_closure_) {
+        std::move(quit_closure_).Run();
+      }
+    }
+  }
+
+  void OnAllFramesBlurred(content::WebContents* web_contents) override {
+    base::AutoLock lock(lock_);
+    if (pending_ack_ == PendingAck::kBlur) {
+      if (quit_closure_) {
+        std::move(quit_closure_).Run();
+      }
+    }
+  }
+
+  void OnAllFramesResumed(content::WebContents* web_contents) override {
+    base::AutoLock lock(lock_);
+    if (pending_ack_ == PendingAck::kUnfreeze) {
+      if (quit_closure_) {
+        std::move(quit_closure_).Run();
+      }
+    }
+  }
+
+  void OnAllFramesFrozen(content::WebContents* web_contents) override {
+    base::AutoLock lock(lock_);
+    if (pending_ack_ == PendingAck::kFreeze) {
+      if (quit_closure_) {
+        std::move(quit_closure_).Run();
+      }
+    }
+  }
+
+  mutable base::Lock lock_;
+  base::OnceClosure quit_closure_;
+  PendingAck pending_ack_ = PendingAck::kNone;
 };
 
 void AppEventRunner::OnStart(const SbEvent* event) {
@@ -403,15 +614,18 @@ void AppEventRunner::OnReveal() {
   set_is_visible(true);
 }
 
-void AppEventRunner::OnFreeze() {
+void AppEventRunner::OnFreeze(base::OnceClosure callback) {
   CHECK(is_running());
   CHECK(!is_visible());
   CHECK(!is_focused());
   CHECK(!is_frozen());
 
-  DoFreeze();
-
-  set_is_frozen(true);
+  DoFreeze(base::BindOnce(
+      [](base::OnceClosure cb, AppEventRunner* runner) {
+        runner->set_is_frozen(true);
+        std::move(cb).Run();
+      },
+      std::move(callback), base::Unretained(this)));
 }
 
 void AppEventRunner::OnUnfreeze() {
@@ -421,7 +635,6 @@ void AppEventRunner::OnUnfreeze() {
   CHECK(is_frozen());
 
   DoUnfreeze();
-
   set_is_frozen(false);
 }
 

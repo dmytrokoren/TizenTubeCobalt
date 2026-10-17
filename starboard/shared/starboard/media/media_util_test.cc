@@ -18,6 +18,7 @@
 
 #include "starboard/common/log.h"
 #include "starboard/media.h"
+#include "starboard/shared/starboard/media/resolutions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 extern bool operator==(const SbMediaColorMetadata&,
@@ -237,6 +238,66 @@ TEST(AudioStreamInfoTest, StreamOperator_Empty) {
             "{codec=opus, mime=(empty), channels=2, "
             "samples_per_second=48'000, bits_per_sample=16}");
 }
-}  // namespace
 
+TEST(MediaUtilTest, Resolutions) {
+  EXPECT_EQ(Resolution::k240p, Size(426, 240));
+  EXPECT_EQ(Resolution::k360p, Size(640, 360));
+  EXPECT_EQ(Resolution::k480p, Size(854, 480));
+  EXPECT_EQ(Resolution::k720p, Size(1280, 720));
+  EXPECT_EQ(Resolution::k1080p, Size(1920, 1080));
+  EXPECT_EQ(Resolution::k1440p, Size(2560, 1440));
+  EXPECT_EQ(Resolution::k4k, Size(3840, 2160));
+  EXPECT_EQ(Resolution::k8k, Size(7680, 4320));
+}
+
+TEST(MediaUtilTest, IsSDRVideo) {
+  EXPECT_TRUE(IsSDRVideo(8, kSbMediaPrimaryIdBt709, kSbMediaTransferIdBt709,
+                         kSbMediaMatrixIdBt709));
+  EXPECT_TRUE(IsSDRVideo(8, kSbMediaPrimaryIdUnspecified,
+                         kSbMediaTransferIdUnspecified,
+                         kSbMediaMatrixIdUnspecified));
+  EXPECT_TRUE(IsSDRVideo(8, kSbMediaPrimaryIdSmpte170M,
+                         kSbMediaTransferIdSmpte170M,
+                         kSbMediaMatrixIdSmpte170M));
+
+  EXPECT_FALSE(IsSDRVideo(10, kSbMediaPrimaryIdBt709, kSbMediaTransferIdBt709,
+                          kSbMediaMatrixIdBt709));
+  EXPECT_FALSE(IsSDRVideo(12, kSbMediaPrimaryIdBt709, kSbMediaTransferIdBt709,
+                          kSbMediaMatrixIdBt709));
+
+  EXPECT_FALSE(IsSDRVideo(8, kSbMediaPrimaryIdBt2020, kSbMediaTransferIdBt709,
+                          kSbMediaMatrixIdBt709));
+  EXPECT_FALSE(IsSDRVideo(8, kSbMediaPrimaryIdBt709,
+                          kSbMediaTransferIdSmpteSt2084,
+                          kSbMediaMatrixIdBt709));
+  EXPECT_FALSE(IsSDRVideo(8, kSbMediaPrimaryIdBt709, kSbMediaTransferIdBt709,
+                          kSbMediaMatrixIdBt2020NonconstantLuminance));
+}
+
+TEST(MediaUtilTest, IsSDRVideo_Mime) {
+  // Standard 8-bit AVC / H.264 stream without HDR colorimetry.
+  EXPECT_TRUE(IsSDRVideo("video/mp4; codecs=\"avc1.4d401e\""));
+  // Short-form VP9 string where bit depth defaults to 8-bit and colorimetry
+  // defaults to BT.709.
+  EXPECT_TRUE(IsSDRVideo("video/webm; codecs=\"vp9\""));
+  // Unrecognized or invalid MIME types fall back to assuming SDR video.
+  EXPECT_TRUE(IsSDRVideo("invalid_mime"));
+  // 8-bit VP9 with explicitly specified BT.709 color primaries (01),
+  // transfer function (01), and matrix coefficients (01).
+  EXPECT_TRUE(
+      IsSDRVideo("video/webm; codecs=\"vp09.00.51.08.01.01.01.01.01\""));
+
+  // 10-bit depth (Profile 2 VP9) is HDR, not SDR.
+  EXPECT_FALSE(
+      IsSDRVideo("video/webm; codecs=\"vp09.02.51.10.01.09.16.09.01\""));
+  // 12-bit depth (Profile 3 VP9) is HDR, not SDR.
+  EXPECT_FALSE(
+      IsSDRVideo("video/webm; codecs=\"vp09.03.51.12.01.09.16.09.01\""));
+  // 8-bit depth VP9 paired with BT.2020 color primaries (09) and SMPTE ST 2084
+  // PQ transfer curve (16) is HDR, not SDR.
+  EXPECT_FALSE(
+      IsSDRVideo("video/webm; codecs=\"vp09.00.51.08.01.09.16.09.01\""));
+}
+
+}  // namespace
 }  // namespace starboard

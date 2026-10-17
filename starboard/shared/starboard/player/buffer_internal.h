@@ -21,8 +21,6 @@
 #include <utility>
 
 #include "starboard/common/check_op.h"
-#include "starboard/common/log.h"
-#include "starboard/configuration.h"
 #include "starboard/shared/internal_only.h"
 
 namespace starboard {
@@ -48,7 +46,12 @@ class Buffer {
   }
 
   Buffer(const Buffer& that)
-      : size_(that.size_), data_(new uint8_t[that.size_ + kPaddingSize * 2]) {
+      : size_(that.size_),
+        data_(that.data_ ? new uint8_t[that.size_ + kPaddingSize * 2]
+                         : nullptr) {
+    if (!data_) {
+      return;
+    }
     memcpy(data_, that.data_, size_ + kPaddingSize * 2);
   }
   Buffer(Buffer&& that) : size_(that.size_), data_(that.data_) {

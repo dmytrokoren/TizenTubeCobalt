@@ -33,7 +33,6 @@
 #include "starboard/shared/starboard/audio_sink/audio_sink_internal.h"
 #include "starboard/shared/starboard/media/media_util.h"
 #include "starboard/shared/starboard/player/job_thread.h"
-#include "starboard/thread.h"
 
 #if defined(ADDRESS_SANITIZER)
 // By default, Leak Sanitizer and Address Sanitizer is expected to exist
@@ -130,7 +129,6 @@ class PulseAudioSinkType : public SbAudioSinkPrivate::Type {
       int channels,
       int sampling_frequency_hz,
       SbMediaAudioSampleType audio_sample_type,
-      SbMediaAudioFrameStorageType audio_frame_storage_type,
       SbAudioSinkFrameBuffers frame_buffers,
       int frames_per_channel,
       SbAudioSinkUpdateSourceStatusFunc update_source_status_func,
@@ -394,7 +392,6 @@ SbAudioSink PulseAudioSinkType::Create(
     int channels,
     int sampling_frequency_hz,
     SbMediaAudioSampleType audio_sample_type,
-    SbMediaAudioFrameStorageType audio_frame_storage_type,
     SbAudioSinkFrameBuffers frame_buffers,
     int frames_per_channel,
     SbAudioSinkUpdateSourceStatusFunc update_source_status_func,
@@ -476,7 +473,7 @@ bool PulseAudioSinkType::Initialize() {
   }
 
   audio_thread_ = JobThread::Create(
-      "pulse_audio", ThreadOptions().SetPriority(kSbThreadPriorityRealTime));
+      "pulse_audio", ThreadOptions().SetPriority(ThreadPriority::kRealTime));
   audio_thread_->Schedule([this] { ProcessAudio(); });
 
   return true;

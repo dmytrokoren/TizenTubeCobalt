@@ -39,26 +39,24 @@
 #include "starboard/shared/starboard/queue_application.h"
 
 #include "third_party/starboard/rdk/shared/ess_input.h"
-#include "third_party/starboard/rdk/shared/rdkservices.h"
 #include "third_party/starboard/rdk/shared/hang_detector.h"
 
 #include <memory>
+#include <mutex>
+#include <string>
+#include <unordered_set>
 #include <essos-app.h>
 #include <chrono>
 
-namespace third_party {
 namespace starboard {
-namespace rdk {
-namespace shared {
 
-class Application : public ::starboard::QueueApplication {
+class ApplicationRdk : public QueueApplication {
  public:
-  explicit Application(SbEventHandleCallback sb_event_handle_callback);
-  ~Application() override;
+  explicit ApplicationRdk(SbEventHandleCallback sb_event_handle_callback);
+  ~ApplicationRdk() override;
 
-  static third_party::starboard::rdk::shared::Application* Get() {
-    return static_cast<third_party::starboard::rdk::shared::Application*>(
-        ::starboard::Application::Get());
+  static ApplicationRdk* Get() {
+    return static_cast<ApplicationRdk*>(Application::Get());
   }
 
   SbWindow CreateSbWindow(const SbWindowOptions* options);
@@ -74,15 +72,17 @@ class Application : public ::starboard::QueueApplication {
   bool IsStartImmediate() override { return !HasPreloadSwitch(); }
   bool IsPreloadImmediate() override { return HasPreloadSwitch(); }
 
-  void InjectAccessibilityTextToSpeechSettingsChanged(bool enabled);
+  void InjectAccessibilitySettingsChanged();
+  void InjectAccessibilityCaptionSettingsChanged();
+  void InjectAccessibilityTextToSpeechSettingsChanged();
+
+  const char* GetLocaleId();
 
  protected:
   // --- Application overrides ---
   void Initialize() override;
   void Teardown() override;
   void Inject(Event* e) override;
-  void OnSuspend() override;
-  void OnResume() override;
 
   // --- QueueApplication overrides ---
   bool MayHaveSystemEvents() override;
@@ -97,8 +97,6 @@ class Application : public ::starboard::QueueApplication {
   void OnDisplaySize(int width, int height);
 
  private:
-  void MaterializeNativeWindow();
-  void DestroyNativeWindow();
   void BuildEssosContext();
   void FatalError();
 
@@ -117,7 +115,6 @@ class Application : public ::starboard::QueueApplication {
   int window_width_ { 0 };
   int window_height_ { 0 };
   bool resize_pending_ { false };
-  bool essos_context_recycle_ { false };
 
   std::chrono::time_point<std::chrono::steady_clock> ess_loop_last_ts_;
   int ess_timer_fd_ { -1 };
@@ -125,11 +122,11 @@ class Application : public ::starboard::QueueApplication {
   int monitor_timer_fd_ { -1 };
 
   std::unique_ptr<HangMonitor> hang_monitor_ { nullptr };
+
+  mutable std::mutex locale_mutex_;
+  std::unordered_set<std::string> locale_pool_;
 };
 
-}  // namespace shared
-}  // namespace rdk
 }  // namespace starboard
-}  // namespace third_party
 
 #endif  // THIRD_PARTY_STARBOARD_RDK_SHARED_APPLICATION_RDK_H_

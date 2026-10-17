@@ -19,11 +19,12 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 
 #include "starboard/android/shared/drm_system.h"
-#include "starboard/android/shared/media_codec_bridge.h"
+#include "starboard/android/shared/media_codec.h"
 #include "starboard/android/shared/media_codec_decoder.h"
 #include "starboard/common/pass_key.h"
 #include "starboard/common/ref_counted.h"
@@ -60,7 +61,7 @@ class MediaCodecAudioDecoder : public AudioDecoder,
   void Decode(const InputBuffers& input_buffers,
               const ConsumedCB& consumed_cb) override;
   void WriteEndOfStream() override;
-  scoped_refptr<DecodedAudio> Read(int* samples_per_second) override;
+  std::optional<DecodedAudio> Read(int* samples_per_second) override;
   void Reset() override;
 
  private:
@@ -69,11 +70,12 @@ class MediaCodecAudioDecoder : public AudioDecoder,
   static const int kMaxPendingWorkSize = 64;
 
   Result<void> InitializeCodec();
-  void ProcessOutputBuffer(MediaCodecBridge* media_codec_bridge,
-                           const DequeueOutputResult& output) override;
-  void OnEndOfStreamWritten(MediaCodecBridge* media_codec_bridge) override {}
-  void RefreshOutputFormat(MediaCodecBridge* media_codec_bridge) override;
-  bool Tick(MediaCodecBridge* media_codec_bridge) override { return false; }
+  void ProcessOutputBuffer(MediaCodec* media_codec_bridge,
+                           const DequeueOutputResult& output,
+                           int number_of_pending_inputs) override;
+  void OnEndOfStreamWritten(MediaCodec* media_codec_bridge) override {}
+  void RefreshOutputFormat(MediaCodec* media_codec_bridge) override;
+  bool Tick(MediaCodec* media_codec_bridge) override { return false; }
   void OnFlushing() override {}
   bool IsBufferDecodeOnly(
       const scoped_refptr<InputBuffer>& input_buffer) override {
@@ -96,7 +98,7 @@ class MediaCodecAudioDecoder : public AudioDecoder,
   ConsumedCB consumed_cb_;
 
   std::mutex decoded_audios_mutex_;
-  std::queue<scoped_refptr<DecodedAudio>> decoded_audios_;
+  std::queue<DecodedAudio> decoded_audios_;
 
   AudioFrameDiscarder audio_frame_discarder_;
   std::unique_ptr<MediaCodecDecoder> media_decoder_;

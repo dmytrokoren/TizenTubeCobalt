@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "base/android/jni_android.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/notimplemented.h"
@@ -90,6 +91,19 @@ void H5vccSystemImpl::RequestTrackingAuthorization(
   std::move(callback).Run(false);
 }
 
+void H5vccSystemImpl::GetFriendlyName(GetFriendlyNameCallback callback) {
+  CHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  JNIEnv* env = base::android::AttachCurrentThread();
+  std::move(callback).Run(StarboardBridge::GetInstance()->GetFriendlyName(env));
+}
+
+void H5vccSystemImpl::GetScreenDiagonal(GetScreenDiagonalCallback callback) {
+  CHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  JNIEnv* env = base::android::AttachCurrentThread();
+  std::move(callback).Run(
+      StarboardBridge::GetInstance()->GetScreenDiagonal(env));
+}
+
 void H5vccSystemImpl::GetUserOnExitStrategy(
     GetUserOnExitStrategyCallback callback) {
   std::move(callback).Run(h5vcc_system::mojom::UserOnExitStrategy::kMinimize);
@@ -105,6 +119,14 @@ void H5vccSystemImpl::HideSplashScreen() {
   LOG(INFO) << "H5vccSystem HideSplashScreen.";
   JNIEnv* env = base::android::AttachCurrentThread();
   StarboardBridge::GetInstance()->HideSplashScreen(env);
+}
+
+void H5vccSystemImpl::GetWasLowMemoryKilled(
+    GetWasLowMemoryKilledCallback callback) {
+  CHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  JNIEnv* env = base::android::AttachCurrentThread();
+  std::move(callback).Run(
+      StarboardBridge::GetInstance()->GetWasLowMemoryKilled(env));
 }
 
 }  // namespace h5vcc_system

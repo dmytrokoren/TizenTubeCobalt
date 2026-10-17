@@ -26,7 +26,6 @@
 #include "starboard/common/string.h"
 #include "starboard/common/time.h"
 #include "starboard/shared/posix/handle_eintr.h"
-#include "starboard/thread.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace nplb {
@@ -244,7 +243,7 @@ void PosixInitializePortNumberForTests() {
     HANDLE_EINTR(close(socket_fd));
     return;
   }
-  port_number_for_tests = addr_in.sin_port;
+  port_number_for_tests = ntohs(addr_in.sin_port);
 
   // Clean up the socket.
   bool result = HANDLE_EINTR(close(socket_fd)) >= 0;

@@ -22,6 +22,7 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "cobalt/browser/constants/cobalt_experiment_names.h"
+#include "cobalt/browser/constants/cobalt_pref_names.h"
 #include "cobalt/browser/features.h"
 #include "cobalt/version.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -532,8 +533,9 @@ TEST_F(ExperimentConfigManagerTest,
   pref_service_->SetString(kExperimentConfigMinVersion, future_version);
   EXPECT_EQ(experiment_config_manager_->GetExperimentConfigType(),
             ExperimentConfigType::kEmptyConfig);
-  histogram_tester_.ExpectUniqueSample("Cobalt.Finch.RollbackDetected", true,
-                                       1);
+  histogram_tester_.ExpectUniqueSample(
+      "Cobalt.Finch.ConfigOutcome",
+      static_cast<int>(FinchConfigOutcome::kEmptyConfigRollback), 1);
 }
 
 TEST_F(ExperimentConfigManagerTest,
@@ -686,6 +688,87 @@ TEST_F(ExperimentConfigManagerTest,
                                     10);
   EXPECT_EQ(experiment_config_manager_->GetExperimentConfigType(),
             ExperimentConfigType::kEmptyConfig);
+}
+
+TEST_F(ExperimentConfigManagerTest, HistogramsConfigOutcomeRegular) {
+  base::Value::Dict feature_map;
+  feature_map.Set(features::kExperimentConfigExpiration.name, true);
+  pref_service_->SetDict(kExperimentConfigFeatures, std::move(feature_map));
+
+  base::Value::Dict finch_params;
+  finch_params.Set("experiment_expiration_threshold_days", 30);
+  pref_service_->SetDict(kFinchParameters, std::move(finch_params));
+
+  pref_service_->SetTime(variations::prefs::kVariationsLastFetchTime,
+                         base::Time::Now() - base::Days(10));
+
+  EXPECT_EQ(experiment_config_manager_->GetExperimentConfigType(),
+            ExperimentConfigType::kRegularConfig);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Cobalt.Finch.ConfigOutcome",
+      static_cast<int>(FinchConfigOutcome::kRegularConfig), 1);
+}
+
+TEST_F(ExperimentConfigManagerTest, HistogramsSafeModeTriggered) {
+  metrics_pref_service_->SetInteger(variations::prefs::kVariationsCrashStreak,
+                                    kDefaultCrashStreakSafeConfigThreshold);
+
+  EXPECT_EQ(experiment_config_manager_->GetExperimentConfigType(),
+            ExperimentConfigType::kSafeConfig);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Cobalt.Finch.ConfigOutcome",
+      static_cast<int>(FinchConfigOutcome::kSafeConfig), 1);
+}
+
+TEST_F(ExperimentConfigManagerTest, HistogramsConfigDiscardedExpiration) {
+  base::Value::Dict feature_map;
+  feature_map.Set(features::kExperimentConfigExpiration.name, true);
+  pref_service_->SetDict(kExperimentConfigFeatures, std::move(feature_map));
+
+  base::Value::Dict finch_params;
+  finch_params.Set("experiment_expiration_threshold_days", 30);
+  pref_service_->SetDict(kFinchParameters, std::move(finch_params));
+
+  pref_service_->SetTime(variations::prefs::kVariationsLastFetchTime,
+                         base::Time::Now() - base::Days(31));
+
+  EXPECT_EQ(experiment_config_manager_->GetExperimentConfigType(),
+            ExperimentConfigType::kEmptyConfig);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Cobalt.Finch.ConfigOutcome",
+      static_cast<int>(FinchConfigOutcome::kEmptyConfigExpired), 1);
+}
+
+TEST_F(ExperimentConfigManagerTest, HistogramsConfigDiscardedDowngrade) {
+  metrics_pref_service_->SetInteger(variations::prefs::kVariationsCrashStreak,
+                                    0);
+  pref_service_->SetString(kExperimentConfigMinVersion, "99.android.0");
+
+  EXPECT_EQ(experiment_config_manager_->GetExperimentConfigType(),
+            ExperimentConfigType::kEmptyConfig);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Cobalt.Finch.ConfigOutcome",
+      static_cast<int>(FinchConfigOutcome::kEmptyConfigRollback), 1);
+}
+
+TEST_F(ExperimentConfigManagerTest, PrefFilePathEquivalenceSanityCheck) {
+  base::FilePath cache_dir(FILE_PATH_LITERAL("test_cache_dir"));
+
+  base::FilePath exp_macro =
+      cache_dir.Append(FILE_PATH_LITERAL("Experiment Config"));
+  base::FilePath exp_ascii = cache_dir.AppendASCII(kExperimentConfigFilename);
+  EXPECT_EQ(exp_macro, exp_ascii);
+  EXPECT_EQ(exp_macro.value(), exp_ascii.value());
+
+  base::FilePath metrics_macro =
+      cache_dir.Append(FILE_PATH_LITERAL("Metrics Config"));
+  base::FilePath metrics_ascii = cache_dir.AppendASCII(kMetricsConfigFilename);
+  EXPECT_EQ(metrics_macro, metrics_ascii);
+  EXPECT_EQ(metrics_macro.value(), metrics_ascii.value());
 }
 
 }  // namespace cobalt

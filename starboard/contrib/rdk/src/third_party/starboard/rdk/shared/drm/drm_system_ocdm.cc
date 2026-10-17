@@ -24,17 +24,13 @@
 
 #include "starboard/shared/starboard/thread_checker.h"
 
-#include <websocket/URL.h>
 #include <opencdm/open_cdm.h>
 #include <opencdm/open_cdm_adapter.h>
 
+#include "third_party/modp_b64/modp_b64.h"
 #include "third_party/starboard/rdk/shared/log_override.h"
 
-namespace third_party {
 namespace starboard {
-namespace rdk {
-namespace shared {
-namespace drm {
 namespace {
 
 static pthread_mutex_t g_session_dtor_mutex_ = PTHREAD_MUTEX_INITIALIZER;
@@ -69,8 +65,6 @@ static OcdmGetMetricSystemDataFn g_ocdmGetMetricSystemData { nullptr };
 static OcdmGetMetricsFn g_ocdmGetMetrics { nullptr };
 
 }  // namespace
-
-namespace session {
 
 SbDrmKeyStatus KeyStatus2DrmKeyStatus(KeyStatus status) {
   switch (status) {
@@ -107,11 +101,10 @@ class Session {
       const SbDrmSessionClosedFunc session_closed_callback);
   ~Session();
   void Close();
-  void GenerateChallenge(const std::string& type,
-                         const void* initialization_data,
-                         int initialization_data_size,
+  void GenerateChallenge(std::string_view type,
+                         std::string_view initialization_data,
                          int ticket);
-  void Update(const void* key, int key_size, int ticket);
+  void Update(std::string_view key, int ticket);
   std::string Id() const { return id_; }
 
   int Decrypt( _GstBuffer* buffer,
@@ -150,7 +143,7 @@ class Session {
     kUpdate,
   };
 
-  ::starboard::ThreadChecker thread_checker_;
+  ThreadChecker thread_checker_;
   Operation operation_{Operation::kNone};
   int ticket_{0};
   DrmSystemOcdm* drm_system_;
@@ -218,9 +211,8 @@ void Session::Close() {
   }
 }
 
-void Session::GenerateChallenge(const std::string& type,
-                                const void* initialization_data,
-                                int initialization_data_size,
+void Session::GenerateChallenge(std::string_view type,
+                                std::string_view initialization_data,
                                 int ticket) {
   SB_DCHECK(thread_checker_.CalledOnValidThread());
   SB_LOG(INFO) << "Generating challenge";
@@ -232,10 +224,11 @@ void Session::GenerateChallenge(const std::string& type,
   }
   OpenCDMSession* session = nullptr;
   if (opencdm_construct_session(
-          ocdm_system_, Temporary, type.c_str(),
-          reinterpret_cast<const uint8_t*>(initialization_data),
-          initialization_data_size, nullptr, 0, &session_callbacks_, this,
-          &session) != ERROR_NONE ||
+          ocdm_system_, Temporary, std::string(type).c_str(),
+          reinterpret_cast<const uint8_t*>(initialization_data.data()),
+          static_cast<uint16_t>(initialization_data.size()),
+          /*cdm_data=*/nullptr, /*cdm_data_size=*/0, &session_callbacks_,
+          /*user_data=*/this, &session) != ERROR_NONE ||
       !session) {
     session_update_request_callback_(drm_system_, context_, ticket,
                                      kSbDrmStatusUnknownError,
@@ -284,7 +277,7 @@ void Session::DispatchPendingKeyUpdates() {
   }
 }
 
-void Session::Update(const void* key, int key_size, int ticket) {
+void Session::Update(std::string_view key, int ticket) {
   SB_DCHECK(thread_checker_.CalledOnValidThread());
   auto id = Id();
   SB_DCHECK(!id.empty());
@@ -294,8 +287,9 @@ void Session::Update(const void* key, int key_size, int ticket) {
     ticket_ = ticket;
     operation_ = Operation::kUpdate;
   }
-  if (opencdm_session_update(session_.get(), static_cast<const uint8_t*>(key),
-                             key_size) != ERROR_NONE) {
+  if (opencdm_session_update(
+          session_.get(), reinterpret_cast<const uint8_t*>(key.data()),
+          static_cast<uint16_t>(key.size())) != ERROR_NONE) {
     session_updated_callback_(drm_system_, context_, ticket,
                               kSbDrmStatusUnknownError, nullptr, id.c_str(),
                               id.size());
@@ -513,10 +507,6 @@ void Session::OnError(struct OpenCDMSession* /*ocdm_session*/,
   }
 }
 
-}  // namespace session
-
-using session::Session;
-
 DrmSystemOcdm::DrmSystemOcdm(
     const char* key_system,
     void* context,
@@ -591,17 +581,15 @@ bool DrmSystemOcdm::IsKeySystemSupported(const char* key_system,
 
 void DrmSystemOcdm::GenerateSessionUpdateRequest(
     int ticket,
-    const char* type,
-    const void* initialization_data,
-    int initialization_data_size) {
+    std::string_view type,
+    std::string_view initialization_data) {
   SB_CHECK(ocdm_system_ != nullptr);
   SB_LOG(INFO) << "Generate challenge type: " << type;
   std::unique_ptr<Session> session(
       new Session(this, ocdm_system_, context_,
                   session_update_request_callback_, session_updated_callback_,
                   key_statuses_changed_callback_, session_closed_callback_));
-  session->GenerateChallenge(type, initialization_data,
-                             initialization_data_size, ticket);
+  session->GenerateChallenge(type, initialization_data, ticket);
   Session *session_ptr = session.get();
   std::unique_lock lock(mutex_);
   sessions_.push_back(std::move(session));
@@ -610,31 +598,27 @@ void DrmSystemOcdm::GenerateSessionUpdateRequest(
 }
 
 void DrmSystemOcdm::UpdateSession(int ticket,
-                                  const void* key,
-                                  int key_size,
-                                  const void* session_id,
-                                  int session_id_size) {
-  std::string id = {static_cast<const char*>(session_id), static_cast<std::string::size_type>(session_id_size)};
-  SB_LOG(INFO) << "Update: " << id;
-  auto* session = GetSessionById(id);
+                                  std::string_view key,
+                                  std::string_view session_id) {
+  SB_LOG(INFO) << "Update: " << session_id;
+  auto* session = GetSessionById(session_id);
   if (session)
-    session->Update(key, key_size, ticket);
+    session->Update(key, ticket);
 }
 
-void DrmSystemOcdm::CloseSession(const void* session_id, int session_id_size) {
-  std::string id = {static_cast<const char*>(session_id), static_cast<std::string::size_type>(session_id_size)};
-  SB_LOG(INFO) << "Close: " << id;
-  auto* session = GetSessionById(id);
+void DrmSystemOcdm::CloseSession(std::string_view session_id) {
+  SB_LOG(INFO) << "Close: " << session_id;
+  auto* session = GetSessionById(session_id);
   if (session)
     session->Close();
 }
 
 void DrmSystemOcdm::UpdateServerCertificate(int ticket,
-                                            const void* certificate,
-                                            int certificate_size) {
+                                            std::string_view certificate) {
   SB_CHECK(ocdm_system_ != nullptr);
   auto status = opencdm_system_set_server_certificate(
-      ocdm_system_, static_cast<const uint8_t*>(certificate), certificate_size);
+      ocdm_system_, reinterpret_cast<const uint8_t*>(certificate.data()),
+      static_cast<int>(certificate.size()));
 
   server_certificate_updated_callback_(
       this, context_, ticket,
@@ -642,17 +626,16 @@ void DrmSystemOcdm::UpdateServerCertificate(int ticket,
       "Error");
 }
 
-SbDrmSystemPrivate::DecryptStatus DrmSystemOcdm::Decrypt(
-    ::starboard::InputBuffer* buffer) {
+SbDrmSystemPrivate::DecryptStatus DrmSystemOcdm::Decrypt(InputBuffer* buffer) {
   SB_NOTREACHED();
   return kFailure;
 }
 
-Session* DrmSystemOcdm::GetSessionById(const std::string& id) {
+Session* DrmSystemOcdm::GetSessionById(std::string_view id) {
   std::lock_guard lock(mutex_);
   auto iter = std::find_if(
       sessions_.begin(), sessions_.end(),
-      [&id](const std::unique_ptr<Session>& s) { return id == s->Id(); });
+      [id](const std::unique_ptr<Session>& s) { return id == s->Id(); });
 
   if (iter != sessions_.end())
     return iter->get();
@@ -766,14 +749,13 @@ int DrmSystemOcdm::Decrypt(const std::string& id,
                             _GstBuffer* iv,
                             _GstBuffer* key,
                             _GstCaps* caps) {
-  session::Session* session = GetSessionById(id);
+  Session* session = GetSessionById(id);
   if (!session)
     return ERROR_INVALID_SESSION;
   return session->Decrypt(buffer, sub_sample, sub_sample_count, iv, key, caps);
 }
 
-const void* DrmSystemOcdm::GetMetrics(int* size) {
-
+std::optional<std::string_view> DrmSystemOcdm::GetMetrics() {
   SB_CHECK(ocdm_system_ != nullptr);
 
   const int kMaxRetry = 5;
@@ -790,9 +772,9 @@ const void* DrmSystemOcdm::GetMetrics(int* size) {
 
     auto rc = g_ocdmGetMetricSystemData(ocdm_system_, &buffer_length, tmp.data());
     if ( rc == ERROR_NONE ) {
-      uint16_t out_length = (((buffer_length * 8) / 6) + 4) * sizeof(TCHAR);
+      size_t out_length = modp_b64_encode_len(buffer_length);
       metrics_.resize(out_length, '\0');
-      out_length = WPEFramework::Core::URL::Base64Encode(tmp.data(), buffer_length, reinterpret_cast<char*>(metrics_.data()), out_length, false);
+      out_length = modp_b64_encode(&(metrics_[0]), reinterpret_cast<const char*>(tmp.data()), buffer_length);
       metrics_.resize(out_length);
     } else if ( rc == kBufferTooSmallErrorCode && i < (kMaxRetry - 1) ) {
       SB_LOG(INFO) << "GetMetrics: buffer is too small, rc = " << rc << ", i = " << i;
@@ -813,24 +795,16 @@ const void* DrmSystemOcdm::GetMetrics(int* size) {
     std::string buffer;
     auto rc = g_ocdmGetMetrics(ocdm_system_, buffer);
     if (rc == ERROR_NONE) {
-      uint16_t buffer_length = buffer.size();
-      uint16_t out_length = (((buffer_length * 8) / 6) + 4) * sizeof(TCHAR);
+      size_t out_length = modp_b64_encode_len(buffer.size());
       metrics_.resize(out_length, '\0');
-      out_length = WPEFramework::Core::URL::Base64Encode(
-          reinterpret_cast<const uint8_t*>(buffer.data()), buffer_length,
-          reinterpret_cast<char*>(metrics_.data()), out_length, false);
+      out_length = modp_b64_encode(&(metrics_[0]), buffer.data(), buffer.size());
       metrics_.resize(out_length);
     }
   }
 
-  *size = static_cast<int>(metrics_.size());
-  return metrics_.data();
+  return metrics_;
 }
 
-}  // namespace drm
-}  // namespace shared
-}  // namespace rdk
 }  // namespace starboard
-}  // namespace third_party
 
 #endif  // defined(HAS_OCDM)

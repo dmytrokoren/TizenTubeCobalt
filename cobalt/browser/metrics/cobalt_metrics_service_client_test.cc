@@ -36,6 +36,7 @@
 #include "cobalt/browser/metrics/cobalt_memory_metrics_emitter.h"
 #include "cobalt/browser/metrics/cobalt_metrics_log_uploader.h"
 #include "cobalt/shell/common/shell_paths.h"
+#include "components/metrics/file_metrics_provider.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/metrics_service.h"
 #include "components/metrics/metrics_state_manager.h"
@@ -82,6 +83,7 @@ class TestProcessMemoryMetricsEmitter : public CobaltMemoryMetricsEmitter {
     browser_dump->os_dump->private_footprint_kb = 10240;  // 10 MB
     browser_dump->os_dump->resident_set_kb = 20480;       // 20 MB
     browser_dump->os_dump->shared_footprint_kb = 5120;    // 5 MB
+#if !BUILDFLAG(IS_IOS_TVOS)
     browser_dump->os_dump->detailed_stats_kb = {
         {"rss:partition_alloc", 16384},
         {"rss:malloc", 10240},
@@ -89,6 +91,7 @@ class TestProcessMemoryMetricsEmitter : public CobaltMemoryMetricsEmitter {
         {"rss:lib_chrobalt", 10240},
         {"pss:lib_chrobalt", 8192},
     };
+#endif  // !BUILDFLAG(IS_IOS_TVOS)
 
     // Add a blink_gc dump
     auto blink_gc_dump = memory_instrumentation::mojom::AllocatorMemDump::New();
@@ -198,9 +201,11 @@ class TestProcessMemoryMetricsEmitter : public CobaltMemoryMetricsEmitter {
         memory_instrumentation::mojom::ProcessType::RENDERER;
     renderer_dump->os_dump = memory_instrumentation::mojom::OSMemDump::New();
     renderer_dump->os_dump->private_footprint_kb = 20480;  // 20 MB
+#if !BUILDFLAG(IS_IOS_TVOS)
     renderer_dump->os_dump->detailed_stats_kb = {
         {"rss:partition_alloc", 2048},
     };
+#endif  // !BUILDFLAG(IS_IOS_TVOS)
 
     auto renderer_blink_gc_dump =
         memory_instrumentation::mojom::AllocatorMemDump::New();
@@ -391,6 +396,9 @@ class CobaltMetricsServiceClientBaseTest : public ::testing::Test {
     // Register all metric-related prefs, otherwise tests crash when calling
     // upstream metrics code.
     metrics::MetricsService::RegisterPrefs(prefs_.registry());
+    metrics::FileMetricsProvider::RegisterPrefs(prefs_.registry());
+    metrics::FileMetricsProvider::RegisterSourcePrefs(
+        prefs_.registry(), "BrowserStabilityMetrics");
     prefs_.registry()->RegisterBooleanPref(
         metrics::prefs::kMetricsReportingEnabled, false);
 

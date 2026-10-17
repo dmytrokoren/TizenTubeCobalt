@@ -3,9 +3,9 @@ Book: /youtube/cobalt/_book.yaml
 
 # Set up your environment - Linux
 
-These instructions explain how Linux users set up their Cobalt development environment, clone a copy of the Cobalt source code repository, and build a Cobalt binary. Note that the binary has a graphical client and must be run locally on the machine that you are using to view the client. For example, you cannot SSH into another machine and run the binary on that machine.
+These instructions explain how to set up a Cobalt development environment, clone the repository, and build a Cobalt binary on Linux. The binary includes a graphical client that you must run locally. For example, you cannot run the binary over an SSH connection.
 
-These instructions were tested on a clean ubuntu:22.04 environment. We recommend using git version 2.51 or later (versions 2.25 and greater are known to succeed, while older versions may fail with gclient). Required libraries can differ depending on your Linux distribution and version.
+These instructions are tested on a clean Ubuntu 22.04 environment. We recommend using Git version 2.51 or later (versions 2.25 and greater are known to work, but older versions may fail with `gclient`). Required libraries may vary depending on your Linux distribution.
 
 ## Set up your workstation
 
@@ -16,7 +16,7 @@ These instructions were tested on a clean ubuntu:22.04 environment. We recommend
      git curl python3-dev xz-utils lsb-release file
    ```
 
-2. Install `ccache` to support build acceleration. Build acceleration is enabled by default and must be disabled if `ccache` is not installed.
+2. Install `ccache` for build acceleration. Acceleration is enabled by default; you must disable it if `ccache` is not installed.
 
    ```bash
    sudo apt install -qqy --no-install-recommends ccache
@@ -46,7 +46,7 @@ These instructions were tested on a clean ubuntu:22.04 environment. We recommend
 
 ## Get source code
 
-To configure your local checkout, you will clone the Cobalt repository and use `gclient` to synchronize dependencies.
+To configure your local workspace, clone the Cobalt repository and use `gclient` to synchronize dependencies.
 
 1. Create a working directory and clone the Cobalt repository into the `src` directory expected by `gclient`:
 
@@ -72,9 +72,9 @@ To configure your local checkout, you will clone the Cobalt repository and use `
 
 ## Build and Run Cobalt
 
-1. Build the code running the following command in the top-level `src` directory. You must specify a platform when running this command. On Ubuntu Linux, the canonical platform is `linux-x64x11`.
+1. Build the code by running the following command in the top-level `src` directory. You must specify a platform. For Ubuntu Linux, the canonical platform is `linux-x64x11`.
 
-   You can also use the `-c` command-line flag to specify a `build_type`. Valid build types are `debug`, `devel`, `qa`, and `gold`. If you specify a build type, the command finishes sooner. Otherwise, all types are built.
+   Use the `-c` flag to specify a `build_type` (`debug`, `devel`, `qa`, or `gold`). Specifying a build type speeds up the configuration step because only that type is configured; otherwise, all types are configured.
 
    ```bash
    cobalt/build/gn.py [-c <build_type>] -p <platform> --no-rbe
@@ -86,7 +86,7 @@ To configure your local checkout, you will clone the Cobalt repository and use `
    autoninja -C out/<platform>_<build_type> <target_name>
    ```
 
-   The previous command contains three variables:
+   The command contains three variables:
 
    1. `<platform>` is the platform configuration that identifies the platform. As described in the Starboard porting guide, it contains a `family name` (like `linux`) and a `binary variant` (like `x64x11`), separated by a hyphen.
    2. `<build_type>` is the build you are compiling. Possible values are `debug`, `devel`, `qa`, and `gold`.
@@ -133,29 +133,100 @@ To configure your local checkout, you will clone the Cobalt repository and use `
      </tr>
    </table>
 
-## Debugging Cobalt
+## Debugging
 
-`debug`, `devel`, and `qa` configs of Cobalt expose a feature enabling developers to trace Cobalt's callstacks per-thread. This is not only a great way to debug application performance, but also a great way to debug issues and better understand Cobalt's execution flow in general.
+Cobalt `debug`, `devel`, and `qa` configurations support thread callstack tracing. This is a powerful tool for debugging application performance and issues, and understanding Cobalt's overall execution flow.
 
-Simply build and run one of these configs and observe the terminal output.
+To use this feature, build and run one of these configurations and monitor the terminal output.
 
-## Running Cobalt in Evergreen Mode
+## Running in Evergreen Mode
 
-As Evergreen support is mandatory for certification, Cobalt can also be executed in Evergreen mode on Linux.
+Because Evergreen support is required for certification, you can also run Cobalt in Evergreen mode on Linux.
 
-1. Initialize an Evergreen build directory for `evergreen-x64`:
+### Deploying Official Google Prebuilt CRX Packages
+
+In standard integration and certification testing, partners deploy official Google prebuilt `.crx` packages (available on [GitHub Releases](https://github.com/youtube/cobalt/releases)) instead of compiling Cobalt Core from source.
+
+1. **Ensure environment variables are set and initialize an Evergreen build directory**:
 
    ```bash
+   export PATH="$HOME/depot_tools:$PATH"
+
    cobalt/build/gn.py -p evergreen-x64 -c qa --no-rbe
    ```
 
-2. Compile the `cobalt_loader` target, which packages the compressed Evergreen library:
+2. **Download the Official Prebuilt CRX File**:
 
    ```bash
-   autoninja -C out/evergreen-x64_qa cobalt_loader
+   export LOCAL_CRX_DIR=/tmp/cobalt_dl
+   rm -rf $LOCAL_CRX_DIR && mkdir -p $LOCAL_CRX_DIR
+
+   COBALT_CRX_URL="https://github.com/youtube/cobalt/releases/download/<version>/cobalt_evergreen_<version>_x64_<config>.crx"
+   wget $COBALT_CRX_URL -O $LOCAL_CRX_DIR/cobalt_prebuilt.crx
    ```
 
-3. To launch Cobalt in Evergreen mode, execute the generated helper script:
+3. **Unpack the CRX Package**:
+
+   ```bash
+   unzip $LOCAL_CRX_DIR/cobalt_prebuilt.crx -d $LOCAL_CRX_DIR/cobalt_prebuilt
+   ```
+
+4. **Stage Unpacked Files into Slot 0 (`app/cobalt/`) Layout**:
+
+   > [!IMPORTANT]
+   > In Cobalt 27.lts, all Slot 0 factory binaries must be located strictly under `<target_root>/app/cobalt/`.
+
+   ```bash
+   export EVERGREEN_DIR=out/evergreen-x64_qa
+   mkdir -p $EVERGREEN_DIR/app/cobalt/lib $EVERGREEN_DIR/app/cobalt/content
+
+   cp -f $LOCAL_CRX_DIR/cobalt_prebuilt/manifest.json $EVERGREEN_DIR/app/cobalt/
+   cp -rf $LOCAL_CRX_DIR/cobalt_prebuilt/lib/* $EVERGREEN_DIR/app/cobalt/lib/
+   cp -rf $LOCAL_CRX_DIR/cobalt_prebuilt/content/* $EVERGREEN_DIR/app/cobalt/content/
+   ```
+
+5. **Build the Loader Executable**:
+
+   ```bash
+   autoninja -C out/evergreen-x64_qa loader_app
+   ```
+
+6. **Launch Cobalt in Evergreen Mode**:
+
+   ```bash
+   out/evergreen-x64_qa/cobalt_loader.py [--url=<url>]
+   ```
+
+---
+
+### Compiling Custom Cobalt Core from Source (For Core Engine Debugging Only)
+
+> [!CAUTION]
+> SoC and OEM partners are required to use official Google Prebuilt CRX packages for testing and certification. Compiling Cobalt Core (`libcobalt.so`) from source is intended only for core developers debugging internal engine changes.
+
+1. **Ensure environment variables are set and initialize an Evergreen build directory**:
+
+   ```bash
+   export PATH="$HOME/depot_tools:$PATH"
+
+   cobalt/build/gn.py -p evergreen-x64 -c qa --no-rbe
+   ```
+
+2. **Compile the Cobalt Core shared library and host compression tool**:
+
+   ```bash
+   autoninja -C out/evergreen-x64_qa cobalt lz4_compress loader_app
+   ```
+
+3. **(Optional) Compress the shared library for testing LZ4 compressed binary loading**:
+
+   ```bash
+   out/evergreen-x64_qa/clang_x64/lz4_compress \
+     out/evergreen-x64_qa/app/cobalt/lib/libcobalt.so \
+     out/evergreen-x64_qa/app/cobalt/lib/libcobalt.lz4
+   ```
+
+4. **Launch Cobalt in Evergreen Mode**:
 
    ```bash
    out/evergreen-x64_qa/cobalt_loader.py [--url=<url>]
@@ -185,9 +256,9 @@ The No Platform Left Behind (NPLB) test suite verifies Starboard implementation 
    out/evergreen-x64_devel/nplb_loader.py -- --gtest_filter=*Posix* --gtest_output=xml:/tmp/nplb_results.xml
    ```
 
-## Removing the Cobalt Environment
+## Clean up or reset the environment
 
-If you ever need to completely reset your Linux build environment or purge cached toolchains:
+To reset your Linux build environment or purge cached toolchains:
 
 1. To clean build artifacts and free up disk space without deleting your source repository:
 

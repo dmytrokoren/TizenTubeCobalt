@@ -17,6 +17,7 @@
 -->
 
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     package="{{ manifest_package }}">
 
     <uses-feature android:name="android.hardware.microphone" android:required="false"/>
@@ -69,7 +70,6 @@
                   android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
                   android:windowSoftInputMode="adjustResize"
                   android:supportsPictureInPicture="true"
-                  android:hardwareAccelerated="true"
                   android:exported="true">
             <meta-data android:name="cobalt.APP_URL" android:value="https://www.youtube.com/tv?additionalDataUrl=http://localhost:8012/apps/YouTube"/>
             <meta-data android:name="cobalt.ENABLE_SPLASH_SCREEN" android:value="true"/>
@@ -100,6 +100,16 @@
             </intent-filter>
         </activity>
         {% endblock %}
+
+        <activity android:name="dev.cobalt.coat.CobaltPictureInPictureActivity"
+                  android:exported="false"
+                  android:noHistory="true"
+                  android:theme="@style/CobaltTheme"
+                  android:excludeFromRecents="true"
+                  android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
+                  android:supportsPictureInPicture="true">
+        </activity>
+
         <!-- The following service entries exist in order to allow us to
              start more than one sandboxed process. -->
 
@@ -154,7 +164,15 @@
           <meta-data
             android:name="android.support.FILE_PROVIDER_PATHS"
             android:resource="@xml/file_paths" />
-    </provider>
+        </provider>
+
+        <!-- Disables at startup init of Emoji2. See http://crbug.com/1205141 -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="remove">
+        </provider>
     </application>
     {% block extra_root_definitions %}
     {% endblock %}

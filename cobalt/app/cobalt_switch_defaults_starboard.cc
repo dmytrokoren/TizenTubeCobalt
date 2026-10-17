@@ -45,12 +45,8 @@ CommandLinePreprocessor::GetCobaltToggleSwitches() {
 
   // List of toggleable default switches.
   static const std::vector<const char*> kCobaltToggleSwitches{
-      // Enable Blink to work in overlay video mode
-      ::switches::kForceVideoOverlays,
       // Disable multiprocess mode.
       ::switches::kSingleProcess,
-      // Hide content shell toolbar.
-      ::switches::kContentShellHideToolbar,
       // Accelerated GL is blanket disabled for Linux. Ignore the GPU
       // blocklist to enable it.
       ::switches::kIgnoreGpuBlocklist,
@@ -58,9 +54,6 @@ CommandLinePreprocessor::GetCobaltToggleSwitches() {
       // disabled.
       ::switches::kNoZygote,
       sandbox::policy::switches::kNoSandbox,
-      // Rasterize Tiles directly to GPU memory
-      // (ZeroCopyRasterBufferProvider).
-      blink::switches::kEnableZeroCopy,
       // Enable low-end device mode. This comes with a load of memory and CPU
       // saving goodies but can degrade the experience considerably. One of
       // the known regressions is 4444 textures, which are then disabled
@@ -75,6 +68,8 @@ CommandLinePreprocessor::GetCobaltToggleSwitches() {
       ::switches::kDisableAcceleratedVideoEncode,
       // Force to use dark mode.
       ::switches::kForceDarkMode,
+      // Hide scrollbars to avoid memory allocation.
+      ::switches::kHideScrollbars,
   };
   return kCobaltToggleSwitches;
 }
@@ -94,7 +89,9 @@ CommandLinePreprocessor::GetCobaltParamSwitchDefaults() {
        "DefaultEnableANGLEValidation, "
        "SmallerInterestArea, "
        "ReclaimPrepaintTilesWhenIdle, "
-       "ReclaimOldPrepaintTiles"},
+       "ReclaimOldPrepaintTiles, "
+       "WebAudioRemoveAudioDestinationResampler, "
+       "DomStorageSmartFlushing"},
   // Force some ozone settings.
 #if BUILDFLAG(IS_OZONE)
       {::switches::kUseGL, "angle"},
@@ -104,9 +101,10 @@ CommandLinePreprocessor::GetCobaltParamSwitchDefaults() {
       {::switches::kUseCmdDecoder, "passthrough"},
       // Set the default size for the content shell/starboard window.
       {::switches::kContentShellHostWindowSize, "1920x1080"},
+#if !BUILDFLAG(COBALT_IS_RELEASE_BUILD)
       // Enable remote Devtools access.
       {::switches::kRemoteDebuggingPort, "9222"},
-      {::switches::kRemoteAllowOrigins, "http://localhost:9222"},
+#endif  // !BUILDFLAG(COBALT_IS_RELEASE_BUILD)
       // kEnableLowEndDeviceMode sets MSAA to 4 (and not 8, the default). But
       // we set it explicitly just in case.
       {blink::switches::kGpuRasterizationMSAASampleCount, "4"},
@@ -116,6 +114,12 @@ CommandLinePreprocessor::GetCobaltParamSwitchDefaults() {
       // Enable autoplay video/audio, as Cobalt may launch directly into media
       // playback before user interaction.
       {::switches::kAutoplayPolicy, "no-user-gesture-required"},
+      {blink::switches::kJavaScriptFlags,
+       // Disable decommitting pooled pages to prevent virtual memory
+       // fragmentation.
+       "--no-decommit-pooled-pages "
+       // Disable v8 concurrent marking by default.
+       "--no-concurrent-marking"},
   };
   return kCobaltSwitchDefaults;
 }

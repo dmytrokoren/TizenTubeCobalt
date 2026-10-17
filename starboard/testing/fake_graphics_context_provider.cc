@@ -14,9 +14,13 @@
 
 #include "starboard/testing/fake_graphics_context_provider.h"
 
+#include <unistd.h>
+
 #include <condition_variable>
 #include <mutex>
 
+#include "build/build_config.h"
+#include "starboard/common/gettid.h"
 #include "starboard/common/log.h"
 #include "starboard/egl_and_gles/buildflags.h"
 
@@ -94,7 +98,9 @@ namespace starboard {
 FakeGraphicsContextProvider::FakeGraphicsContextProvider()
     : display_(EGL_NO_DISPLAY),
       surface_(EGL_NO_SURFACE),
-      context_(EGL_NO_CONTEXT) {
+      context_(EGL_NO_CONTEXT),
+      window_(kSbWindowInvalid) {
+  InitializeWindow();
   InitializeEGL();
 }
 
@@ -107,11 +113,12 @@ FakeGraphicsContextProvider::~FakeGraphicsContextProvider() {
   }
   EGL_CALL(eglDestroySurface(display_, surface_));
   EGL_CALL(eglTerminate(display_));
+  SbWindowDestroy(window_);
 }
 
 void FakeGraphicsContextProvider::RunOnGlesContextThread(
     const std::function<void()>& functor) {
-  if (SbThreadGetId() == gles_context_thread_id_.load()) {
+  if (gettid() == gles_context_thread_id_.load()) {
     functor();
     return;
   }
@@ -130,7 +137,7 @@ void FakeGraphicsContextProvider::RunOnGlesContextThread(
 
 void FakeGraphicsContextProvider::ReleaseDecodeTarget(
     SbDecodeTarget decode_target) {
-  if (SbThreadGetId() == gles_context_thread_id_.load()) {
+  if (gettid() == gles_context_thread_id_.load()) {
     SbDecodeTargetRelease(decode_target);
     return;
   }
@@ -150,13 +157,23 @@ void FakeGraphicsContextProvider::ReleaseDecodeTarget(
 }
 
 void FakeGraphicsContextProvider::RunLoop() {
-  gles_context_thread_id_.store(SbThreadGetId());
+  gles_context_thread_id_.store(gettid());
   while (std::function<void()> functor = functor_queue_.Get()) {
     if (!functor) {
       break;
     }
     functor();
   }
+}
+
+void FakeGraphicsContextProvider::InitializeWindow() {
+  SbWindowOptions window_options;
+  SbWindowSetDefaultOptions(&window_options);
+
+  window_ = SbWindowCreate(&window_options);
+#if BUILDFLAG(IS_STARBOARD)
+  SB_CHECK(SbWindowIsValid(window_));
+#endif
 }
 
 void FakeGraphicsContextProvider::InitializeEGL() {
@@ -288,7 +305,7 @@ void FakeGraphicsContextProvider::InitializeEGL() {
 void FakeGraphicsContextProvider::OnDecodeTargetGlesContextRunner(
     SbDecodeTargetGlesContextRunnerTarget target_function,
     void* target_function_context) {
-  if (SbThreadGetId() == gles_context_thread_id_.load()) {
+  if (gettid() == gles_context_thread_id_.load()) {
     target_function(target_function_context);
     return;
   }

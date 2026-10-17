@@ -28,11 +28,17 @@
 #include "base/system/sys_info.h"
 #include "base/system/sys_info_starboard.h"
 #include "build/build_config.h"
+#include "cobalt/browser/features.h"
 #include "cobalt/cobalt_build_id.h"  // Generated
 #include "cobalt/version.h"
 #include "starboard/common/system_property.h"
 #include "starboard/extension/platform_info.h"
 #include "v8/include/v8-version-string.h"
+
+#if BUILDFLAG(USE_EVERGREEN)
+#include "cobalt/updater/util.h"  //nogncheck
+#include "starboard/extension/installation_manager.h"
+#endif
 
 namespace cobalt {
 
@@ -187,10 +193,10 @@ void UserAgentPlatformInfo::InitializePlatformDependentFieldsAndroid() {
 #elif BUILDFLAG(IS_STARBOARD)
 void UserAgentPlatformInfo::InitializePlatformDependentFieldsStarboard() {
   std::string os_name = base::SysInfo::OperatingSystemName();
-  const std::string os_friendly_name =
-      base::starboard::SbSysInfo::OSFriendlyName();
-  if (!os_friendly_name.empty()) {
-    os_name = os_friendly_name + "; " + os_name;
+  const std::string os_platform_name =
+      base::starboard::SbSysInfo::OSPlatformName();
+  if (!os_platform_name.empty()) {
+    os_name = os_platform_name + "; " + os_name;
   }
   const std::string os_version = base::SysInfo::OperatingSystemVersion();
   set_os_name_and_version(
@@ -199,15 +205,6 @@ void UserAgentPlatformInfo::InitializePlatformDependentFieldsStarboard() {
       starboard::GetSystemPropertyString(kSbSystemPropertyFirmwareVersion));
   // Rasterizer type is gles for both Linux and Android.
   set_rasterizer_type("gles");
-
-  // TODO(cobalt, b/374213479): Retrieve Evergreen
-  // #if BUILDFLAG(IS_EVERGREEN)
-  //   updater::EvergreenLibraryMetadata evergreen_library_metadata =
-  //       updater::GetCurrentEvergreenLibraryMetadata();
-  //   set_evergreen_version(evergreen_library_metadata.version);
-  //   set_evergreen_file_type(evergreen_library_metadata.file_type);
-  //   set_evergreen_type("Lite");
-  // #endif
 }
 
 #elif BUILDFLAG(IS_IOS_TVOS)
@@ -278,6 +275,20 @@ void UserAgentPlatformInfo::InitializeUserAgentPlatformInfoFields() {
   set_javascript_engine_version(
       base::StringPrintf("v8/%s-jit", V8_VERSION_STRING));
 
+#if BUILDFLAG(USE_EVERGREEN)
+  updater::EvergreenLibraryMetadata evergreen_library_metadata =
+      updater::GetCurrentEvergreenLibraryMetadata();
+  set_evergreen_version(evergreen_library_metadata.version);
+  set_evergreen_file_type(evergreen_library_metadata.file_type);
+  if (!SbSystemGetExtension(kCobaltExtensionInstallationManagerName)) {
+    // If the installation manager is not initialized, the "evergreen_lite"
+    // command line parameter is specified and the system image is loaded.
+    set_evergreen_type("Lite");
+  } else {
+    set_evergreen_type("Full");
+  }
+#endif
+
   if (!avoid_access_to_starboard_for_testing_) {
     set_device_type(
         starboard::GetSystemPropertyString(kSbSystemPropertyDeviceType));
@@ -319,6 +330,13 @@ void UserAgentPlatformInfo::InitializeUserAgentPlatformInfoFields() {
 #else
   set_build_configuration("devel");
 #endif
+
+  if (base::FeatureList::IsEnabled(features::kEnableUserAgentFinchToken)) {
+    const std::string& finch_token = features::kUserAgentFinchTokenParam.Get();
+    if (!finch_token.empty()) {
+      set_finch_version(finch_token);
+    }
+  }
 
 // Apply overrides from command line
 #if !BUILDFLAG(COBALT_IS_RELEASE_BUILD)
@@ -501,6 +519,11 @@ void UserAgentPlatformInfo::set_evergreen_version(
   evergreen_version_ = Sanitize(evergreen_version, isTCHAR);
 }
 
+void UserAgentPlatformInfo::set_finch_version(
+    const std::string& finch_version) {
+  finch_version_ = Sanitize(finch_version, isTCHAR);
+}
+
 void UserAgentPlatformInfo::set_android_build_fingerprint(
     const std::string& android_build_fingerprint) {
   android_build_fingerprint_ =
@@ -547,6 +570,9 @@ std::string UserAgentPlatformInfo::ToString() const {
   //   Evergreen/Version
   //   Evergreen-Type
   //   Evergreen-FileType
+  //
+  // In the case of Finch experiment verification:
+  //   Finch/Version
 
   std::string user_agent =
       base::StringPrintf("Mozilla/5.0 (%s)", os_name_and_version_.c_str());
@@ -579,6 +605,10 @@ std::string UserAgentPlatformInfo::ToString() const {
 
   if (!starboard_version_.empty()) {
     base::StringAppendF(&user_agent, " %s", starboard_version_.c_str());
+  }
+
+  if (!finch_version_.empty()) {
+    base::StringAppendF(&user_agent, " Finch/%s", finch_version_.c_str());
   }
 
   const std::string kUnknownFieldName = "Unknown";

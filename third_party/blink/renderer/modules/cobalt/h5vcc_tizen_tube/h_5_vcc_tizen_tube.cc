@@ -150,7 +150,7 @@ bool H5vccTizenTube::HasSystemFeature(
     return false;
   }
 
-  #ifdef BUILDFLAG(IS_ANDROID)
+  #if BUILDFLAG(IS_ANDROID)
     auto* env = base::android::AttachCurrentThread();
     starboard::StarboardBridge* bridge = starboard::StarboardBridge::GetInstance();
     bool has_feature = bridge->HasSystemFeature(env, feature_name.Utf8().data());

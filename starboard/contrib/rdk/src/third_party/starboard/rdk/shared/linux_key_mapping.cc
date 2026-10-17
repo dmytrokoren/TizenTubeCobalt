@@ -16,6 +16,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "third_party/starboard/rdk/shared/linux_key_mapping.h"
+#include "third_party/starboard/rdk/shared/system/system_get_path.h"
 
 #include <core/JSON.h>
 #include <core/Enumerate.h>
@@ -40,10 +41,7 @@ ENUM_CONVERSION_END(SbKeyModifiers);
 
 }
 
-namespace third_party {
 namespace starboard {
-namespace rdk {
-namespace shared {
 
 namespace {
 
@@ -251,7 +249,14 @@ struct LinuxKeyMappingImpl {
   LinuxKeyMappingImpl() {
     const int kBufferSize = 256;
     char buffer[kBufferSize];
+
+    // kept for backward compatibility, however new keymaps should not be added
+    // in this location as it changes after evergeen update
     if (SbSystemGetPath(kSbSystemPathContentDirectory, buffer, kBufferSize)) {
+      ReadFromFile(std::string(buffer).append("/etc/keymapping.json"));
+    }
+
+    if (system::GetContentDirectory(buffer, kBufferSize)) {
       ReadFromFile(std::string(buffer).append("/etc/keymapping.json"));
     }
   }
@@ -265,7 +270,4 @@ void LinuxKeyMapping::MapKeyCodeAndModifiers(uint32_t& key_code, uint32_t& modif
   GetLinuxKeyMapping()->MapKeyCodeAndModifiers(key_code, modifiers);
 }
 
-}  // namespace shared
-}  // namespace rdk
 }  // namespace starboard
-}  // namespace third_party

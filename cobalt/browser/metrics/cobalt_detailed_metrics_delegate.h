@@ -17,19 +17,13 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 #include "base/containers/flat_map.h"
 #include "base/synchronization/lock.h"
 #include "services/resource_coordinator/public/cpp/memory_instrumentation/detailed_metrics_delegate.h"
-#include "third_party/abseil-cpp/absl/strings/string_view.h"
 
 namespace cobalt {
-
-struct CategoryPattern {
-  const char* label;
-  const char* pattern;
-  bool is_prefix;
-};
 
 // Cobalt-specific implementation of the DetailedMetricsDelegate.
 // Categorizes /proc/self/smaps mappings into Cobalt-specific categories.
@@ -41,7 +35,7 @@ class CobaltDetailedMetricsDelegate
 
   // DetailedMetricsDelegate implementation.
   void OnSmapsEntry(
-      absl::string_view name,
+      std::string_view name,
       const memory_instrumentation::SmapsMetrics& metrics) override;
   void GetAndResetStats(base::flat_map<std::string, uint64_t>* stats) override;
 

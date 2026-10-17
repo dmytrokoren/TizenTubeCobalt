@@ -81,9 +81,7 @@ There are minimal differences in switching to Evergreen as the Cobalt team has
 already done a majority of the work building the necessary components to support
 the Evergreen architecture. You will still be responsible for building the
 Starboard and platform-specific components as usual. Thereafter, switching to
-Evergreen is as simple as building a different configuration. Please see the
-Raspberry Pi 2 Evergreen reference port
-([Instructions](cobalt_evergreen_reference_port_raspi2.md)) for an example.
+Evergreen is as simple as building a different configuration.
 
 ![Cobalt non-Evergreen vs
 Evergreen](resources/cobalt_evergreen_overview_vs_non_evergreen.png)
@@ -105,10 +103,7 @@ changes are needed by the partner here.
 However, a few small changes are needed in the partner's port, which is used to
 build the partner-built components, to make it compatible with Evergreen.
 
-First, partners should set `sb_is_evergreen_compatible = true` in the platform's
-`platform_configuration/configuration.gni` file. (Please DO NOT set
-`sb_is_evergreen` to `true`, as this should only be set in the Evergreen
-platforms that are maintained by Google and used to build Cobalt core.)
+First, ensure that your platform is built with Starboard enabled (`is_starboard = true`, which is the default for all Starboard platforms). Please DO NOT set `sb_is_evergreen` to `true`, as this should only be set in the Evergreen platforms that are maintained by Google and used to build Cobalt core.
 
 Second, in the platform's `toolchain/BUILD.gn` file partners should copy their
 "starboard" toolchain to add a "native_target" toolchain that is identical
@@ -282,8 +277,8 @@ be an Evergreen platform configuration, and have a Starboard ABI file that
 matches the file used by the platform configuration used to build the
 `elf_loader_sandbox`.
 
-For example, building these targets for the Raspberry Pi 2 would use the
-`raspi-2` and `evergreen-arm-hardfp` platform configurations.
+For example, building these targets for the RDK would use the
+`rdk-arm` and `evergreen-arm-hardfp` platform configurations.
 
 ## Verifying Platform Requirements
 
@@ -291,12 +286,7 @@ In order to verify the platform requirements you should run the
 `nplb_evergreen_compat_tests`. These tests ensure that the platform is
 configured appropriately for Evergreen.
 
-To enable the test, set the `sb_is_evergreen_compatible` GN variable to `true`
-in the platform's `configuration.gni`. For more details please take a look at
-the Raspberry Pi 2 GN files.
-
-There is a reference implementation available for Raspberry Pi 2 with
-instructions available [here](cobalt_evergreen_reference_port_raspi2.md).
+These tests are enabled automatically for all Starboard platforms (`is_starboard = true`).
 
 ### Verifying Crashpad Uploads
 
@@ -740,3 +730,17 @@ Much of the optimization work remains in the Starboard layer and configuration
 so you should still expect good performance using Cobalt Evergreen. That being
 said, the Cobalt Evergreen configuration allows you to customize Cobalt features
 and settings as before.
+
+### How can I trade storage space for lower memory consumption using mmap?
+
+On platforms with storage space to spare, memory can be saved by using memory mapping (`mmap`) to load the Cobalt shared library. To enable this feature:
+
+1. **Use an uncompressed `libcobalt.so`:** The Cobalt Core binary library cannot be compressed. You will need to ensure that the uncompressed `.so` variant is packaged rather than a compressed `.lz4` file in the system image slot.
+2. **Hook up the Memory Mapped File API:** Ensure that the `CobaltExtensionMemoryMappedFileApi` is hooked up by returning it from your platform's implementation of `SbSystemGetExtension()`. For reference on a Linux build, see `starboard/linux/shared/system_get_extensions.cc` where this is configured using `kCobaltExtensionMemoryMappedFileName`:
+
+   ```cpp
+     if (strcmp(name, kCobaltExtensionMemoryMappedFileName) == 0) {
+       return starboard::GetMemoryMappedFileApi();
+     }
+   ```
+3. **Pass Launch Flag:** When launching the Cobalt `loader_app` binary on your platform, pass the `--loader_use_mmap_file` flag to enable memory mapped file loading. Note that mmap is incompatible with binary compression. When `--loader_use_mmap_file` is set, the Cobalt Updater will automatically request and download uncompressed `libcobalt.so` binaries for subsequent updates. Because the updates will remain uncompressed on disk, total storage usage will increase.

@@ -19,8 +19,10 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -32,17 +34,11 @@ struct _GstCaps;
 struct _GstBuffer;
 struct OpenCDMSystem;
 
-namespace third_party {
 namespace starboard {
-namespace rdk {
-namespace shared {
-namespace drm {
 
-namespace session {
 class Session;
-}
 
-class DrmSystemOcdm : public SbDrmSystemPrivate, public ::starboard::RefCountedThreadSafe<DrmSystemOcdm> {
+class DrmSystemOcdm : public SbDrmSystemPrivate, public RefCountedThreadSafe<DrmSystemOcdm> {
  public:
   class Observer {
    public:
@@ -72,23 +68,20 @@ class DrmSystemOcdm : public SbDrmSystemPrivate, public ::starboard::RefCountedT
                                    const char* mime_type);
 
   // SbDrmSystemPrivate
-  void GenerateSessionUpdateRequest(int ticket,
-                                    const char* type,
-                                    const void* initialization_data,
-                                    int initialization_data_size) override;
-  void CloseSession(const void* session_id, int session_id_size) override;
+  void GenerateSessionUpdateRequest(
+      int ticket,
+      std::string_view type,
+      std::string_view initialization_data) override;
+  void CloseSession(std::string_view session_id) override;
   void UpdateSession(int ticket,
-                     const void* key,
-                     int key_size,
-                     const void* session_id,
-                     int session_id_size) override;
-  DecryptStatus Decrypt(::starboard::InputBuffer* buffer) override;
+                     std::string_view key,
+                     std::string_view session_id) override;
+  DecryptStatus Decrypt(InputBuffer* buffer) override;
   bool IsServerCertificateUpdatable() override { return false; }
   void UpdateServerCertificate(int ticket,
-                               const void* certificate,
-                               int certificate_size) override;
+                               std::string_view certificate) override;
 
-  const void* GetMetrics(int* size) override;
+  std::optional<std::string_view> GetMetrics() override;
 
   void AddObserver(Observer* obs);
   void RemoveObserver(Observer* obs);
@@ -110,14 +103,14 @@ class DrmSystemOcdm : public SbDrmSystemPrivate, public ::starboard::RefCountedT
   void Invalidate();
 
  private:
-  session::Session* GetSessionById(const std::string& id);
+  Session* GetSessionById(std::string_view id);
   void AnnounceKeys();
 
   std::set<std::string> GetReadyKeysUnlocked() const;
 
   std::string key_system_;
   void* context_;
-  std::vector<std::unique_ptr<session::Session>> sessions_;
+  std::vector<std::unique_ptr<Session>> sessions_;
 
   const SbDrmSessionUpdateRequestFunc session_update_request_callback_;
   const SbDrmSessionUpdatedFunc session_updated_callback_;
@@ -132,13 +125,9 @@ class DrmSystemOcdm : public SbDrmSystemPrivate, public ::starboard::RefCountedT
   SbEventId event_id_;
   std::mutex mutex_;
 
-  std::vector<uint8_t> metrics_;
+  std::string metrics_;
 };
 
-}  // namespace drm
-}  // namespace shared
-}  // namespace rdk
 }  // namespace starboard
-}  // namespace third_party
 
 #endif  // THIRD_PARTY_STARBOARD_RDK_SHARED_DRM_DRM_SYSTEM_OCDM_H_

@@ -16,6 +16,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -698,8 +699,24 @@ musl_pid_t __abi_wrap_getpid() {
   return static_cast<musl_pid_t>(getpid());
 }
 
+musl_pid_t __abi_wrap_gettid() {
+#if defined(gettid)
+  return static_cast<musl_pid_t>(gettid());
+#else
+  return static_cast<musl_pid_t>(syscall(SYS_gettid));
+#endif
+}
+
 int __abi_wrap_access(const char* path, int amode) {
   return access(path, access_helper(amode));
+}
+
+int __abi_wrap_isatty(int fd) {
+  int result = isatty(fd);
+  if (result == 0 && errno != EBADF) {
+    errno = ENOTTY;
+  }
+  return result;
 }
 
 int __abi_wrap_fchown(int fd, musl_uid_t owner, musl_gid_t group) {
@@ -713,4 +730,15 @@ int __abi_wrap_unlinkat(int fildes, const char* path, int musl_flag) {
     return -1;
   }
   return unlinkat(fildes, path, flag);
+}
+
+ssize_t __abi_wrap_pread(int fd, void* buf, size_t size, musl_off_t ofs) {
+  return pread(fd, buf, size, static_cast<off_t>(ofs));
+}
+
+ssize_t __abi_wrap_pwrite(int fd,
+                          const void* buf,
+                          size_t size,
+                          musl_off_t ofs) {
+  return pwrite(fd, buf, size, static_cast<off_t>(ofs));
 }

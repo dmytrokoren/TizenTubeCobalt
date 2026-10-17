@@ -55,6 +55,24 @@ TEST(CobaltSwitchDefaultsTest, MergeDisabledFeatures) {
   EXPECT_EQ(std::string("PersistentOriginTrials,Vulkan"), disabled_features);
 }
 
+TEST(CobaltSwitchDefaultsTest, MergeEnabledFeatures) {
+  const auto input_argv =
+      std::to_array<const char*>({"PROGRAM", "--enable-features=UseFoo"});
+  const int input_argc = static_cast<int>(input_argv.size());
+  CommandLinePreprocessor cmd_line_pxr(input_argc, input_argv.data());
+
+  std::string enabled_features =
+      GetSwitchValue(cmd_line_pxr, ::switches::kEnableFeatures);
+  EXPECT_EQ(std::string("UseFoo,LimitImageDecodeCacheSize:mb/24, "
+                        "DefaultEnableANGLEValidation, "
+                        "SmallerInterestArea, "
+                        "ReclaimPrepaintTilesWhenIdle, "
+                        "ReclaimOldPrepaintTiles, "
+                        "WebAudioRemoveAudioDestinationResampler, "
+                        "DomStorageSmartFlushing"),
+            enabled_features);
+}
+
 TEST(CobaltSwitchDefaultsTest, ConsistentWindowSizes) {
   const auto input_argv = std::to_array<const char*>({
       "PROGRAM",
@@ -103,12 +121,11 @@ TEST(CobaltSwitchDefaultsTest, AlwaysEnabledSwitches) {
   CommandLinePreprocessor cmd_line_pxr(input_argc, input_argv.data());
 
   std::vector<const char*> always_on_switches{
-      ::switches::kForceVideoOverlays, ::switches::kSingleProcess,
-      ::switches::kIgnoreGpuBlocklist,
+      ::switches::kSingleProcess, ::switches::kIgnoreGpuBlocklist,
 #if BUILDFLAG(IS_ANDROID)
       ::switches::kUserLevelMemoryPressureSignalParams,
 #endif  // BUILDFLAG(IS_ANDROID)
-      sandbox::policy::switches::kNoSandbox};
+      sandbox::policy::switches::kNoSandbox, ::switches::kHideScrollbars};
 
   for (const auto& switch_key : always_on_switches) {
     EXPECT_TRUE(HasSwitch(cmd_line_pxr, switch_key));

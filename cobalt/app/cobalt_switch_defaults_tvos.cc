@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "base/base_switches.h"
 #include "cobalt/app/cobalt_switch_defaults.h"
 #include "cobalt/shell/common/shell_switches.h"
 #include "content/public/common/content_switches.h"
@@ -26,12 +27,8 @@ namespace cobalt {
 const std::vector<const char*>&
 CommandLinePreprocessor::GetCobaltToggleSwitches() {
   static const std::vector<const char*> kCobaltToggleSwitches{
-      // Enable Blink to work in overlay video mode
-      ::switches::kForceVideoOverlays,
       // Disable multiprocess mode.
       ::switches::kSingleProcess,
-      // Hide content shell toolbar.
-      ::switches::kContentShellHideToolbar,
       // Accelerated GL is blanket disabled for Linux. Ignore the GPU blocklist
       // to enable it.
       ::switches::kIgnoreGpuBlocklist,
@@ -47,6 +44,9 @@ CommandLinePreprocessor::GetCobaltToggleSwitches() {
       // Cobalt doesn't use Chrome's accelerated video decoding/encoding.
       ::switches::kDisableAcceleratedVideoDecode,
       ::switches::kDisableAcceleratedVideoEncode,
+      // b/507534015 - Prevent scrollbars from being shown briefly whenever a
+      // carousel is loading (e.g., showing a horizontal list of videos).
+      ::switches::kHideScrollbars,
   };
 
   return kCobaltToggleSwitches;
@@ -71,6 +71,7 @@ CommandLinePreprocessor::GetCobaltParamSwitchDefaults() {
       // Enable autoplay video/audio, as Cobalt may launch directly into media
       // playback before user interaction.
       {::switches::kAutoplayPolicy, "no-user-gesture-required"},
+      {::switches::kEnableFeatures, "WebAudioRemoveAudioDestinationResampler"},
   });
   return kCobaltSwitchDefaults;
 }

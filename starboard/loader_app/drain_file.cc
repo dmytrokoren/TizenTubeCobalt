@@ -72,8 +72,12 @@ int64_t ExtractTimestamp(const std::string& str) {
 
 bool IsExpired(const std::string& filename) {
   const int64_t timestamp = ExtractTimestamp(filename);
-  return timestamp + kDrainFileMaximumAgeUsec <
-         PosixTimeToWindowsTime(CurrentPosixTime());
+  const int64_t current_time = PosixTimeToWindowsTime(CurrentPosixTime());
+  // A drain file is considered expired if it is older than the max age,
+  // or if its timestamp has been artificially placed far in the future
+  // (e.g. more than the max age later than the current timestamp).
+  return timestamp < current_time - kDrainFileMaximumAgeUsec ||
+         timestamp > current_time + kDrainFileMaximumAgeUsec;
 }
 
 std::vector<std::string> FindAllWithPrefix(const std::string& dir,
@@ -93,10 +97,8 @@ std::vector<std::string> FindAllWithPrefix(const std::string& dir,
     if (filename.size() < kSbFileMaxName || !directory || !filename.data()) {
       break;
     }
-    struct dirent dirent_buffer;
-    struct dirent* dirent;
-    int result = readdir_r(directory, &dirent_buffer, &dirent);
-    if (result || !dirent) {
+    struct dirent* dirent = readdir(directory);
+    if (!dirent) {
       break;
     }
     starboard::strlcpy(filename.data(), dirent->d_name, filename.size());

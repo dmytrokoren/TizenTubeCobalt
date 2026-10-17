@@ -14,6 +14,9 @@
 
 #include "starboard/android/shared/media_codec_audio_decoder.h"
 
+#include <utility>
+
+#include "starboard/android/shared/media_codec.h"
 #include "starboard/android/shared/media_common.h"
 #include "starboard/audio_sink.h"
 #include "starboard/common/check_op.h"
@@ -161,17 +164,17 @@ void MediaCodecAudioDecoder::WriteEndOfStream() {
   }
 }
 
-scoped_refptr<DecodedAudio> MediaCodecAudioDecoder::Read(
+std::optional<DecodedAudio> MediaCodecAudioDecoder::Read(
     int* samples_per_second) {
   SB_CHECK(BelongsToCurrentThread());
   SB_DCHECK(output_cb_);
 
-  scoped_refptr<DecodedAudio> result;
+  std::optional<DecodedAudio> result;
   {
     std::lock_guard lock(decoded_audios_mutex_);
     SB_DCHECK(!decoded_audios_.empty());
     if (!decoded_audios_.empty()) {
-      result = decoded_audios_.front();
+      result = std::move(decoded_audios_.front());
       VERBOSE_MEDIA_LOG() << "T3: timestamp " << result->timestamp();
       decoded_audios_.pop();
     }
@@ -215,8 +218,9 @@ void MediaCodecAudioDecoder::Reset() {
 
 Result<void> MediaCodecAudioDecoder::InitializeCodec() {
   SB_DCHECK(!media_decoder_);
+  DefaultMediaCodecFactory factory;
   auto result = MediaCodecDecoder::CreateForAudio(
-      job_queue(), this, audio_stream_info_, drm_system_);
+      factory, job_queue(), this, audio_stream_info_, drm_system_);
   if (result) {
     media_decoder_ = std::move(result.value());
     if (error_cb_) {
@@ -230,24 +234,24 @@ Result<void> MediaCodecAudioDecoder::InitializeCodec() {
 }
 
 void MediaCodecAudioDecoder::ProcessOutputBuffer(
-    MediaCodecBridge* media_codec_bridge,
-    const DequeueOutputResult& dequeue_output_result) {
+    MediaCodec* media_codec_bridge,
+    const DequeueOutputResult& dequeue_output_result,
+    int /*number_of_pending_inputs*/) {
   SB_DCHECK(media_codec_bridge);
   SB_DCHECK(output_cb_);
   SB_DCHECK_GE(dequeue_output_result.index, 0);
 
   if (dequeue_output_result.num_bytes > 0) {
-    ScopedJavaLocalRef<jobject> byte_buffer(
-        media_codec_bridge->GetOutputBuffer(dequeue_output_result.index));
+    void* address =
+        media_codec_bridge->GetOutputBufferAddress(dequeue_output_result.index)
+            .data();
 
-    if (byte_buffer.is_null()) {
+    if (!address) {
       ReportError(kSbPlayerErrorDecode,
                   "Failed to process audio output buffer.");
       return;
     }
 
-    JNIEnv* env = jni_zero::AttachCurrentThread();
-    void* address = env->GetDirectBufferAddress(byte_buffer.obj());
     int16_t* data = static_cast<int16_t*>(
         IncrementPointerByBytes(address, dequeue_output_result.offset));
     int size = dequeue_output_result.num_bytes;
@@ -263,29 +267,28 @@ void MediaCodecAudioDecoder::ProcessOutputBuffer(
       size /= 2;
     }
 
-    scoped_refptr<DecodedAudio> decoded_audio = new DecodedAudio(
+    DecodedAudio decoded_audio(
         audio_stream_info_.number_of_channels, sample_type_,
-        kSbMediaAudioFrameStorageTypeInterleaved,
         dequeue_output_result.presentation_time_microseconds, size);
 
-    memcpy(decoded_audio->data(), data, size);
+    memcpy(decoded_audio.data(), data, size);
     audio_frame_discarder_.AdjustForDiscardedDurations(
         audio_stream_info_.samples_per_second, &decoded_audio);
 
     {
       std::lock_guard lock(decoded_audios_mutex_);
-      decoded_audios_.push(decoded_audio);
+      decoded_audios_.push(std::move(decoded_audio));
       VERBOSE_MEDIA_LOG() << "T2: timestamp "
-                          << decoded_audios_.front()->timestamp();
+                          << decoded_audios_.front().timestamp();
     }
     Schedule(output_cb_);
   }
 
   // BUFFER_FLAG_END_OF_STREAM may come with the last valid output buffer.
-  if (dequeue_output_result.flags & BUFFER_FLAG_END_OF_STREAM) {
+  if (dequeue_output_result.flags & MediaCodec::kBufferFlagEndOfStream) {
     {
       std::lock_guard lock(decoded_audios_mutex_);
-      decoded_audios_.push(new DecodedAudio());
+      decoded_audios_.push(DecodedAudio::CreateEOSBuffer());
     }
     audio_frame_discarder_.OnDecodedAudioEndOfStream();
     Schedule(output_cb_);
@@ -295,7 +298,7 @@ void MediaCodecAudioDecoder::ProcessOutputBuffer(
 }
 
 void MediaCodecAudioDecoder::RefreshOutputFormat(
-    MediaCodecBridge* media_codec_bridge) {
+    MediaCodec* media_codec_bridge) {
   std::optional<AudioOutputFormatResult> output_format =
       media_codec_bridge->GetAudioOutputFormat();
   if (!output_format) {

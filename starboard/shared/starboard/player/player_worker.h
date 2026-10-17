@@ -23,6 +23,7 @@
 #include <utility>
 
 #include "starboard/common/log.h"
+#include "starboard/common/rect.h"
 #include "starboard/common/ref_counted.h"
 #include "starboard/common/result.h"
 #include "starboard/media.h"
@@ -52,10 +53,12 @@ class PlayerWorker {
 
   struct Bounds {
     int z_index;
-    int x;
-    int y;
-    int width;
-    int height;
+    Rect rect;
+
+    bool operator==(const Bounds& other) const {
+      return z_index == other.z_index && rect == other.rect;
+    }
+    bool operator!=(const Bounds& other) const { return !(*this == other); }
   };
 
   // All functions of this class will be called from the JobQueue thread.
@@ -102,6 +105,8 @@ class PlayerWorker {
     virtual SbDecodeTarget GetCurrentDecodeTarget() = 0;
 
     virtual void SetMaxVideoInputSize(int max_video_input_size) = 0;
+    virtual void SetMaxVideoResolution(
+        const std::string& max_video_resolution) = 0;
 
     virtual void SetVideoSurfaceView(void* surface_view) = 0;
     virtual void SetExperimentalFeatures(
